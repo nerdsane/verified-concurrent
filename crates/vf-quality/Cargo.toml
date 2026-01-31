@@ -1,0 +1,15 @@
+[package]
+name = "vf-quality"
+description = "Code quality checkers including TigerStyle for verified lock-free structures"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+syn.workspace = true
+quote.workspace = true
+proc-macro2.workspace = true
+
+[dev-dependencies]

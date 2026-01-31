@@ -1,0 +1,26 @@
+[package]
+name = "vf-examples"
+description = "Reference implementations of verified lock-free structures"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+vf-core.workspace = true
+vf-dst.workspace = true
+
+crossbeam-epoch.workspace = true
+crossbeam-utils.workspace = true
+
+[dev-dependencies]
+rand.workspace = true
+
+[target.'cfg(loom)'.dependencies]
+loom = "0.7"
+
+[features]
+default = []
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }

@@ -1,0 +1,16 @@
+[package]
+name = "vf-stateright"
+description = "Stateright models mirroring TLA+ specs for verified lock-free structures"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+vf-core.workspace = true
+
+stateright.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+num_cpus = "1.16"
