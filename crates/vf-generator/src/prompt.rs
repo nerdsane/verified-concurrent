@@ -199,52 +199,74 @@ Return ONLY Rust code in a ```rust code block."#
     }
 
     /// Extract operations from spec content.
+    ///
+    /// This derives the REQUIRED API from the spec - what the tests will call.
+    /// This is not an implementation hint, it's interface specification.
     fn extract_operations(spec: &TlaSpec) -> String {
-        let mut operations = Vec::new();
         let content_lower = spec.content.to_lowercase();
 
-        // Look for common operation patterns in TLA+ specs
-        if content_lower.contains("push") {
-            operations.push("- `push(value)`: Add element to the structure");
-        }
-        if content_lower.contains("pop") {
-            operations.push("- `pop() -> Option<value>`: Remove and return element");
-        }
-        if content_lower.contains("begin") {
-            operations.push("- `begin() -> TxnId`: Start a new transaction");
-        }
-        if content_lower.contains("read") && content_lower.contains("txn") {
-            operations.push("- `read(txn, key) -> Option<Value>`: Read value in transaction");
-        }
-        if content_lower.contains("write") && content_lower.contains("txn") {
-            operations.push("- `write(txn, key, value) -> bool`: Write value in transaction");
-        }
-        if content_lower.contains("commit") {
-            operations.push("- `commit(txn) -> bool`: Commit transaction (false = aborted)");
-        }
-        if content_lower.contains("abort") {
-            operations.push("- `abort(txn)`: Abort transaction");
-        }
-        if content_lower.contains("enqueue") {
-            operations.push("- `enqueue(value)`: Add element to queue");
-        }
-        if content_lower.contains("dequeue") {
-            operations.push("- `dequeue() -> Option<value>`: Remove and return element from queue");
+        // Detect SSI (transaction-based with conflict tracking)
+        let is_ssi = content_lower.contains("in_conflict") || content_lower.contains("out_conflict");
+        let is_stack = content_lower.contains("push") && content_lower.contains("pop");
+        let is_queue = content_lower.contains("enqueue") && content_lower.contains("dequeue");
+
+        if is_ssi {
+            // SSI requires a specific API that tests will call
+            return r#"Your struct MUST be named `SsiStore` and implement these EXACT methods:
+
+```rust
+pub type TxnId = u64;
+pub type KeyId = u64;
+pub type Value = u64;
+
+impl SsiStore {
+    pub fn new() -> Self;
+    pub fn begin(&self) -> TxnId;
+    pub fn read(&self, txn: TxnId, key: KeyId) -> Option<Value>;
+    pub fn write(&self, txn: TxnId, key: KeyId, value: Value) -> bool;
+    pub fn commit(&self, txn: TxnId) -> bool;  // false = abort due to conflict
+    pub fn abort(&self, txn: TxnId);
+    pub fn is_active(&self, txn: TxnId) -> bool;
+    pub fn committed_txns(&self) -> HashSet<TxnId>;
+    pub fn get_current_value(&self, key: KeyId) -> Option<Value>;
+    pub fn get_conflict_flags(&self, txn: TxnId) -> (bool, bool);  // (in_conflict, out_conflict)
+}
+```
+
+IMPORTANT: Use interior mutability (Mutex or RwLock) for thread-safety.
+The tests WILL call these exact methods."#.to_string();
         }
 
-        if operations.is_empty() {
-            // Fall back to listing variables as hints
-            format!(
-                "Operations should manipulate these state variables:\n{}",
-                spec.variables
-                    .iter()
-                    .map(|v| format!("- `{}`", v))
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            )
-        } else {
-            operations.join("\n")
+        if is_stack {
+            return r#"Your struct MUST be named `TreiberStack<T>` and implement these methods:
+
+- `pub fn new() -> Self`
+- `pub fn push(&self, value: T)`
+- `pub fn pop(&self) -> Option<T>`
+- `pub fn is_empty(&self) -> bool`
+- `pub fn pushed_elements(&self) -> Vec<u64>` (for verification)
+- `pub fn popped_elements(&self) -> Vec<u64>` (for verification)
+- `pub fn get_contents(&self) -> Vec<u64>` (current stack contents, top to bottom)"#.to_string();
         }
+
+        if is_queue {
+            return r#"Your struct MUST be named `MsQueue<T>` and implement these methods:
+
+- `pub fn new() -> Self`
+- `pub fn enqueue(&self, value: T)`
+- `pub fn dequeue(&self) -> Option<T>`
+- `pub fn is_empty(&self) -> bool`"#.to_string();
+        }
+
+        // Fall back to listing variables
+        format!(
+            "Operations should manipulate these state variables:\n{}",
+            spec.variables
+                .iter()
+                .map(|v| format!("- `{}`", v))
+                .collect::<Vec<_>>()
+                .join("\n")
+        )
     }
 
     /// Extract types from spec constants.
