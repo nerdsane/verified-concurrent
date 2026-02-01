@@ -1,8 +1,10 @@
-# Verified Lock-Free
+# Verified Concurrent
 
 **Correctness-by-construction verification cascade.**
 
 Code is disposable. Specs, invariants, and state machines are the intent.
+
+Covers both **lock-free** structures (Treiber Stack, M&S Queue) and **lock-based** protocols (SSI, 2PL).
 
 ## The Paradigm Shift
 
@@ -116,6 +118,13 @@ cargo test -p vf-stateright
 | `vf-stateright` | State machine models, oracle extraction |
 | `vf-generator` | LLM code generation from specs |
 | `vf-examples` | Reference implementations |
+
+## Specs
+
+| Spec | Category | What it verifies |
+|------|----------|------------------|
+| `treiber_stack.tla` | Lock-free | LIFO stack with CAS |
+| `serializable_snapshot_isolation.tla` | Lock-based | SSI transaction isolation (PostgreSQL) |
 
 ## Oracle Flow
 
