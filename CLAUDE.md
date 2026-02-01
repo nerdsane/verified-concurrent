@@ -21,6 +21,91 @@ Both **lock-free** and **lock-based** concurrent systems:
 2. **Three pillars**: Correctness + Quality + Performance
 3. **DST is core** - Deterministic Simulation Testing catches most issues
 4. **TigerStyle is mandatory** - Not optional guidelines, required rules
+5. **Unix philosophy** - Small, composable tools with single responsibility
+6. **Bitter lesson** - General methods + computation beat encoded knowledge
+
+## Bitter Lesson Philosophy
+
+**General methods that leverage computation scale better than hand-engineered knowledge.**
+
+Applied to this project:
+
+| Old Approach | Bitter Lesson Approach |
+|--------------|----------------------|
+| Templates with CAS patterns | Derive from spec, let LLM figure out |
+| Hints about memory ordering | State invariants, cascade verifies |
+| "How to fix" guidance | Diagnostic feedback (what failed) |
+| Implementation-specific prompts | Generic prompts from TLA+ |
+
+**Generator architecture:**
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    BITTER LESSON ALIGNED                     │
+│                                                              │
+│  1. PARSE SPEC                                               │
+│     TLA+ → {invariants, operations, state_vars}              │
+│                                                              │
+│  2. GENERIC PROMPT (no implementation hints)                 │
+│     "Implement satisfying these invariants: [from spec]"     │
+│     NOT: "Use CAS with retry loop and epoch-based GC"        │
+│                                                              │
+│  3. CASCADE FEEDBACK (diagnostic, not prescriptive)          │
+│     "Invariant NoLostElements violated at line 42"           │
+│     NOT: "Add epoch::pin() guard before the CAS"             │
+│                                                              │
+│  4. PERFORMANCE PHASE (after correctness)                    │
+│     "Your solution is Blocking, can you achieve LockFree?"   │
+│                                                              │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Two-phase generation:**
+1. **Correctness**: Iterate until cascade passes
+2. **Performance**: Iterate toward target progress guarantee (WaitFree > LockFree > ObstructionFree > Blocking)
+
+**Key insight**: Any implementation that passes the cascade is correct. Among correct implementations, prefer better performing ones.
+
+## Unix Philosophy / Separation of Concerns
+
+**Each crate owns its domain. Don't duplicate logic across crates.**
+
+| Crate | Owns | Does NOT Own |
+|-------|------|--------------|
+| vf-core | Invariants, counterexamples, property types | Verification execution |
+| vf-dst | Simulation environment (clock, RNG, faults) | Invariant definitions |
+| vf-evaluators | Running tools, parsing output, cascade orchestration | Analysis algorithms |
+| vf-perf | Progress guarantee detection, performance analysis | Code generation |
+| vf-quality | TigerStyle checking, code quality rules | Performance metrics |
+| vf-generator | Prompts, LLM calls, output parsing | Analysis of generated code |
+
+**The Rule**: If crate A needs functionality from domain B, import and call crate B. Never duplicate B's logic into A.
+
+**Example - Performance Analysis**:
+```rust
+// WRONG: Generator duplicates perf analysis logic
+// vf-generator/src/lib.rs
+fn analyze_progress(code: &str) -> ProgressGuarantee {
+    // ... 50 lines of analysis logic that belongs in vf-perf
+}
+
+// RIGHT: Generator calls vf-perf
+// vf-generator/src/lib.rs
+use vf_perf::analyze_progress_guarantee;
+
+fn report_performance(code: &str) -> String {
+    let guarantee = analyze_progress_guarantee(code);  // vf-perf owns this
+    format!("Progress guarantee: {:?}", guarantee)
+}
+```
+
+**Compose, don't absorb**: Build pipelines of small tools rather than monolithic crates.
+
+```
+TLA+ Spec → vf-generator (prompts) → Claude → vf-evaluators (cascade) → vf-perf (analysis) → Report
+              │                                      │                       │
+              └─ owns prompts                        └─ owns cascade         └─ owns metrics
+```
 
 ## The Verification Pyramid
 
@@ -191,6 +276,8 @@ cargo run -p vf-evaluators -- cascade crates/vf-examples/src/treiber_stack.rs
 | Unbounded data structures | Always have `_MAX` constants |
 | SSI: forgetting SIREAD locks persist | Locks survive commit for conflict detection |
 | SSI: checking only one conflict flag | Dangerous structure needs BOTH flags |
+| Duplicating logic across crates | **Import and call** the owning crate, don't copy-paste |
+| Putting analysis code in generator | Analysis belongs in vf-perf/vf-quality, generator just calls them |
 
 ## References
 
