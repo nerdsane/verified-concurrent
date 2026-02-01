@@ -4,7 +4,16 @@
 
 Code is disposable. Specs, invariants, and state machines are the intent.
 
-Covers both **lock-free** structures (Treiber Stack, M&S Queue) and **lock-based** protocols (SSI, 2PL).
+## Scope
+
+Both **lock-free** and **lock-based** concurrent systems:
+
+| Category | Examples | Techniques |
+|----------|----------|------------|
+| **Lock-free** | Treiber Stack, M&S Queue | CAS, helping, hazard pointers |
+| **Lock-based** | SSI, 2PL, MVCC | Locks, conflict detection, abort |
+
+The verification approach is the same: specs define truth, code is disposable.
 
 ## The Paradigm Shift
 
@@ -48,6 +57,7 @@ Code must pass each level in order:
 Generated code is **pure** - just the algorithm, nothing else.
 
 ```rust
+// Lock-free: Treiber Stack
 impl TreiberStack {
     fn push(&self, value: u64) {
         let node = Node::new(value);
@@ -58,6 +68,15 @@ impl TreiberStack {
                 break;
             }
         }
+    }
+}
+
+// Lock-based: SSI Transaction
+impl SsiTransaction {
+    fn read(&mut self, key: Key) -> Value {
+        self.siread_locks.insert(key);
+        self.check_conflicts()?;
+        self.snapshot.get(key)
     }
 }
 ```
@@ -76,6 +95,13 @@ The **intent** lives in specifications, not implementations:
 | Oracles | Interesting interleavings | Derived |
 | **Code** | **One possible implementation** | **Disposable** |
 
+## Specs
+
+| Spec | Category | Invariants |
+|------|----------|------------|
+| `treiber_stack.tla` | Lock-free | NoLostElements, NoDuplicates, LIFO |
+| `serializable_snapshot_isolation.tla` | Lock-based | FirstCommitterWins, Serializable, NoLostWrites |
+
 ## Three Pillars
 
 ### 1. Correctness (Evaluator Cascade)
@@ -92,21 +118,8 @@ Full implementation of [TigerStyle](https://tigerstyle.dev):
 
 ### 3. Performance
 
-- Progress guarantees: wait-free > lock-free > obstruction-free
-- Memory overhead analysis
-
-## Quick Start
-
-```bash
-# Run all tests
-cargo test --workspace
-
-# Run with specific DST seed (for reproduction)
-DST_SEED=12345 cargo test -p vf-examples
-
-# Run stateright model checking
-cargo test -p vf-stateright
-```
+- **Lock-free**: Progress guarantees (wait-free > lock-free > obstruction-free)
+- **Lock-based**: Abort rates, conflict frequency, throughput under contention
 
 ## Crate Map
 
@@ -119,12 +132,21 @@ cargo test -p vf-stateright
 | `vf-generator` | LLM code generation from specs |
 | `vf-examples` | Reference implementations |
 
-## Specs
+## Quick Start
 
-| Spec | Category | What it verifies |
-|------|----------|------------------|
-| `treiber_stack.tla` | Lock-free | LIFO stack with CAS |
-| `serializable_snapshot_isolation.tla` | Lock-based | SSI transaction isolation (PostgreSQL) |
+```bash
+# Run all tests
+cargo test --workspace
+
+# Run with specific DST seed (for reproduction)
+DST_SEED=12345 cargo test -p vf-examples
+
+# Run stateright model checking
+cargo test -p vf-stateright
+
+# Run SSI state machine tests
+cargo test -p vf-stateright ssi
+```
 
 ## Oracle Flow
 

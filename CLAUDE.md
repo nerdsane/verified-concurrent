@@ -1,8 +1,19 @@
-# Verified Lock-Free Development Guide
+# Verified Concurrent Development Guide
 
 ## Project Vision
 
-Build the "LLVM equivalent" for verified code generation - where TLA+ specs define correctness, code is disposable, and any implementation that passes the evaluator cascade is "correct by construction."
+**Correctness-by-construction verification cascade for concurrent systems.**
+
+Code is disposable. Specs, invariants, and state machines are the intent.
+
+## Scope
+
+Both **lock-free** and **lock-based** concurrent systems:
+
+| Category | Examples | Key Invariants |
+|----------|----------|----------------|
+| **Lock-free** | Treiber Stack, M&S Queue | NoLostElements, NoDuplicates, Progress |
+| **Lock-based** | SSI, 2PL, MVCC | FirstCommitterWins, Serializable |
 
 ## Core Principles
 
@@ -14,7 +25,7 @@ Build the "LLVM equivalent" for verified code generation - where TLA+ specs defi
 ## The Verification Pyramid
 
 ```
-         TLA+ Specs (specs/*.tla)
+         TLA+ Specs (specs/**/*.tla)
                     │ defines
          Shared Invariants (vf-core/src/invariants/)
                     │ verified by
@@ -36,6 +47,7 @@ All code must pass this cascade in order:
 | 3 | DST | seconds | Faults, crashes, delays |
 | 4 | stateright | seconds | Invariant violations |
 | 5 | kani | minutes | Bounded proofs |
+| 6 | verus | minutes | SMT theorem proving |
 
 ## Three Pillars
 
@@ -66,7 +78,8 @@ All code must pass this cascade in order:
 - Snake_case, no abbreviations
 
 ### Pillar 3: Performance
-- Progress guarantees: wait-free > lock-free > obstruction-free
+- **Lock-free**: Progress guarantees (wait-free > lock-free > obstruction-free)
+- **Lock-based**: Abort rates, conflict frequency, throughput
 - Memory overhead analysis
 - Contention behavior
 
@@ -93,23 +106,34 @@ fn test_under_faults() {
 |-------|---------|
 | vf-core | PropertyResult, invariants, counterexamples |
 | vf-dst | SimClock, DeterministicRng, FaultInjector |
-| vf-evaluators | Cascade orchestration (rustc → kani) |
+| vf-evaluators | Cascade orchestration (rustc → verus) |
 | vf-quality | TigerStyle checker, clippy integration |
 | vf-perf | Progress guarantees, benchmark harness |
 | vf-stateright | State machine models mirroring TLA+ |
+| vf-generator | LLM code generation from specs |
 | vf-examples | Reference implementations |
 
 ## TLA+ Specs
 
-All specs live in `specs/` directory:
+Specs organized by category in `specs/` directory:
 
-| Spec | Purpose |
-|------|---------|
-| treiber_stack.tla | Lock-free stack (core teaching spec) |
-| treiber_stack_aba.tla | Deliberately vulnerable version |
-| ms_queue.tla | Michael-Scott queue |
-| ring_buffer.tla | Lock-free ring buffer |
-| epoch_gc.tla | Memory reclamation |
+| Spec | Category | Purpose |
+|------|----------|---------|
+| `specs/lockfree/treiber_stack.tla` | Lock-free | LIFO stack with CAS |
+| `specs/ssi/serializable_snapshot_isolation.tla` | Lock-based | PostgreSQL SERIALIZABLE |
+
+### SSI (Serializable Snapshot Isolation)
+
+Key concepts:
+- **Snapshot**: Each transaction sees consistent view from start time
+- **SIREAD locks**: Track reads even after commit (for conflict detection)
+- **Conflict flags**: `in_conflict` and `out_conflict` per transaction
+- **Dangerous structure**: Transaction with both flags (potential cycle)
+
+Invariants:
+- `FirstCommitterWins`: No concurrent commits to same key
+- `NoCommittedDangerousStructures`: No cycles in conflict graph
+- `Serializable`: History is equivalent to some serial execution
 
 ## Commands
 
@@ -124,7 +148,10 @@ DST_SEED=12345 cargo test -p vf-examples
 RUSTFLAGS="--cfg loom" cargo test --release -p vf-examples
 
 # Run stateright model checking
-cargo test -p vf-stateright -- --ignored
+cargo test -p vf-stateright
+
+# Run SSI tests specifically
+cargo test -p vf-stateright ssi
 
 # Check TigerStyle compliance
 cargo run -p vf-quality -- check crates/vf-examples/src/
@@ -133,7 +160,9 @@ cargo run -p vf-quality -- check crates/vf-examples/src/
 cargo run -p vf-evaluators -- cascade crates/vf-examples/src/treiber_stack.rs
 ```
 
-## Adding New Lock-Free Structures
+## Adding New Concurrent Structures
+
+### Lock-free structures:
 
 1. Write TLA+ spec in `specs/lockfree/`
 2. Add invariants to `vf-core/src/invariants/`
@@ -141,6 +170,14 @@ cargo run -p vf-evaluators -- cascade crates/vf-examples/src/treiber_stack.rs
 4. Write reference implementation in `vf-examples/src/`
 5. Add DST tests in `vf-examples/tests/`
 6. Verify: `cargo run -p vf-evaluators -- cascade <file>`
+
+### Lock-based protocols:
+
+1. Write TLA+ spec in `specs/<protocol>/` (e.g., `specs/ssi/`)
+2. Add invariants to `vf-core/src/invariants/`
+3. Create Stateright model in `vf-stateright/src/`
+4. Write state machine tests
+5. Verify invariants hold in all reachable states
 
 ## Known Pitfalls
 
@@ -151,6 +188,8 @@ cargo run -p vf-evaluators -- cascade crates/vf-examples/src/treiber_stack.rs
 | Missing retry loop in CAS | All CAS must retry on failure |
 | Wrong memory ordering | Use Acquire/Release/AcqRel appropriately |
 | Unbounded data structures | Always have `_MAX` constants |
+| SSI: forgetting SIREAD locks persist | Locks survive commit for conflict detection |
+| SSI: checking only one conflict flag | Dangerous structure needs BOTH flags |
 
 ## References
 
@@ -158,3 +197,4 @@ cargo run -p vf-evaluators -- cascade crates/vf-examples/src/treiber_stack.rs
 - [Loom documentation](https://docs.rs/loom)
 - [Stateright book](https://www.stateright.rs/)
 - [spacejam/tla-rust](https://github.com/spacejam/tla-rust) - Inspiration
+- [Cahill's SSI paper](http://cahill.net.au/wp-content/uploads/2009/01/real-serializable.pdf)
