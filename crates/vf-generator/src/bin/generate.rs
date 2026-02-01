@@ -1,13 +1,10 @@
-//! CLI for generating verified lock-free implementations from TLA+ specs.
+//! CLI for generating verified implementations from TLA+ specs.
 //!
 //! # Usage
 //!
 //! ```bash
 //! # Generate from spec file
 //! cargo run -p vf-generator --bin vf-generate -- --spec specs/lockfree/treiber_stack.tla
-//!
-//! # With custom max attempts
-//! cargo run -p vf-generator --bin vf-generate -- --spec specs/lockfree/treiber_stack.tla --max-attempts 10
 //!
 //! # Quick mode (faster verification)
 //! cargo run -p vf-generator --bin vf-generate -- --spec specs/lockfree/treiber_stack.tla --quick
@@ -21,6 +18,7 @@ use std::process::ExitCode;
 
 use vf_evaluators::EvaluatorLevel;
 use vf_generator::{CodeGenerator, GeneratorConfig};
+use vf_perf::ProgressGuarantee;
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -50,17 +48,21 @@ async fn main() -> ExitCode {
     };
 
     if let Some(max) = args.max_attempts {
-        config.max_attempts = max;
+        config.max_correctness_attempts = max;
     }
 
     if let Some(ref level) = args.max_level {
         config.cascade_config.max_level = parse_level(level);
     }
 
+    if let Some(ref target) = args.target_progress {
+        config.target_progress_guarantee = parse_progress(target);
+    }
+
     config.verbose = !args.quiet;
 
     // Create generator
-    let generator = match CodeGenerator::from_env(config) {
+    let generator = match CodeGenerator::from_env(config.clone()) {
         Ok(g) => g,
         Err(e) => {
             eprintln!("Error creating generator: {}", e);
@@ -71,11 +73,12 @@ async fn main() -> ExitCode {
         }
     };
 
-    println!("Verified Lock-Free Code Generator");
-    println!("==================================");
+    println!("Verified Code Generator (Bitter Lesson Aligned)");
+    println!("================================================");
     println!();
     println!("Spec: {}", spec_path.display());
-    println!("Max level: {:?}", generator.max_level());
+    println!("Max cascade level: {:?}", config.cascade_config.max_level);
+    println!("Target progress: {:?}", config.target_progress_guarantee);
     println!();
 
     // Generate
@@ -107,7 +110,8 @@ async fn main() -> ExitCode {
                 }
                 ExitCode::SUCCESS
             } else {
-                eprintln!("Generation failed after {} attempts", result.attempts);
+                let total_attempts = result.correctness_attempts + result.perf_attempts;
+                eprintln!("Generation failed after {} attempts", total_attempts);
                 ExitCode::FAILURE
             }
         }
@@ -124,6 +128,7 @@ struct Args {
     output: Option<PathBuf>,
     max_attempts: Option<u32>,
     max_level: Option<String>,
+    target_progress: Option<String>,
     quick: bool,
     thorough: bool,
     quiet: bool,
@@ -137,6 +142,7 @@ impl Args {
             output: None,
             max_attempts: None,
             max_level: None,
+            target_progress: None,
             quick: false,
             thorough: false,
             quiet: false,
@@ -157,6 +163,9 @@ impl Args {
                 }
                 "--max-level" | "-l" => {
                     args.max_level = iter.next();
+                }
+                "--target-progress" | "-p" => {
+                    args.target_progress = iter.next();
                 }
                 "--quick" => {
                     args.quick = true;
@@ -191,47 +200,72 @@ fn parse_level(s: &str) -> EvaluatorLevel {
         "dst" | "3" => EvaluatorLevel::Dst,
         "stateright" | "4" => EvaluatorLevel::Stateright,
         "kani" | "5" => EvaluatorLevel::Kani,
+        "verus" | "6" => EvaluatorLevel::Verus,
         _ => EvaluatorLevel::Dst, // Default
+    }
+}
+
+fn parse_progress(s: &str) -> ProgressGuarantee {
+    match s.to_lowercase().as_str() {
+        "blocking" | "0" => ProgressGuarantee::Blocking,
+        "obstruction-free" | "obstruction" | "1" => ProgressGuarantee::ObstructionFree,
+        "lock-free" | "lockfree" | "2" => ProgressGuarantee::LockFree,
+        "wait-free" | "waitfree" | "3" => ProgressGuarantee::WaitFree,
+        _ => ProgressGuarantee::LockFree, // Default
     }
 }
 
 fn print_help() {
     println!(
-        r#"vf-generate - Generate verified lock-free code from TLA+ specs
+        r#"vf-generate - Generate verified code from TLA+ specs (Bitter Lesson Aligned)
 
 USAGE:
     vf-generate --spec <SPEC_FILE> [OPTIONS]
 
+PHILOSOPHY:
+    - Prompts derived from specs (no implementation hints)
+    - LLM figures out implementation strategy
+    - Cascade feedback is diagnostic (what failed, not how to fix)
+    - Performance is first-class (iterate toward best performing correct solution)
+
 OPTIONS:
-    -s, --spec <FILE>        TLA+ specification file (required)
-    -o, --output <FILE>      Output file for generated code (default: stdout)
-    -n, --max-attempts <N>   Maximum generation attempts (default: 5)
-    -l, --max-level <LEVEL>  Maximum evaluator level (rustc, miri, loom, dst, stateright, kani)
-    --quick                  Use quick verification (fewer iterations)
-    --thorough               Use thorough verification (more iterations)
-    -q, --quiet              Suppress progress output
-    -h, --help               Show this help message
+    -s, --spec <FILE>           TLA+ specification file (required)
+    -o, --output <FILE>         Output file for generated code (default: stdout)
+    -n, --max-attempts <N>      Maximum correctness attempts (default: 5)
+    -l, --max-level <LEVEL>     Maximum evaluator level
+    -p, --target-progress <P>   Target progress guarantee (default: lock-free)
+    --quick                     Quick mode (fewer attempts, fast cascade)
+    --thorough                  Thorough mode (more attempts, full cascade)
+    -q, --quiet                 Suppress progress output
+    -h, --help                  Show this help message
+
+EVALUATOR LEVELS:
+    rustc (0)     - Type checking, lifetime analysis
+    miri (1)      - Undefined behavior detection
+    loom (2)      - Thread interleaving exploration
+    dst (3)       - Deterministic simulation testing
+    stateright (4) - Model checking against TLA+ spec
+    kani (5)      - Bounded model checking / proofs
+    verus (6)     - SMT theorem proving
+
+PROGRESS GUARANTEES (best to worst):
+    wait-free (3)       - Every thread completes in bounded steps
+    lock-free (2)       - At least one thread makes progress
+    obstruction-free (1) - Progress if run in isolation
+    blocking (0)        - May block indefinitely
 
 EXAMPLES:
     # Generate from TLA+ spec
     vf-generate --spec specs/lockfree/treiber_stack.tla
 
-    # Quick generation with output file
-    vf-generate --spec specs/lockfree/treiber_stack.tla --quick --output stack.rs
+    # Quick generation targeting lock-free
+    vf-generate --spec specs/lockfree/treiber_stack.tla --quick -p lock-free
 
-    # Thorough verification up to loom level
-    vf-generate --spec specs/lockfree/treiber_stack.tla --thorough --max-level loom
+    # Thorough verification targeting wait-free
+    vf-generate --spec specs/lockfree/treiber_stack.tla --thorough -p wait-free
 
 ENVIRONMENT:
     ANTHROPIC_API_KEY    Required. Your Anthropic API key.
-
-EVALUATOR CASCADE:
-    Level 0: rustc      - Type checking, lifetime analysis
-    Level 1: miri       - Undefined behavior detection
-    Level 2: loom       - Thread interleaving exploration
-    Level 3: DST        - Deterministic simulation testing
-    Level 4: stateright - Model checking against TLA+ spec
-    Level 5: kani       - Bounded model checking / proofs
 "#
     );
 }

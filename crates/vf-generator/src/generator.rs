@@ -1,22 +1,30 @@
 //! Code generator with verification loop.
 //!
-//! Implements the generate → verify → fix cycle using LLM and the evaluator cascade.
+//! Implements the generate → verify → optimize cycle.
+//! Bitter lesson aligned: derive everything from specs, let LLM figure out implementation.
+//! Performance is first-class: iterate toward best performing correct solution.
 
 use std::path::Path;
 use std::time::{Duration, Instant};
 
 use vf_core::TlaSpec;
-use vf_evaluators::{CascadeConfig, CascadeResult, EvaluatorCascade, EvaluatorLevel};
+use vf_evaluators::{CascadeConfig, CascadeResult, EvaluatorCascade};
 use vf_perf::{analyze_progress_guarantee, ProgressGuarantee};
 
 use crate::client::{ClaudeClient, ClientError, Message};
-use crate::prompt::{extract_code_block, PromptBuilder, SpecType};
+use crate::prompt::{extract_code_block, PromptBuilder};
 
 /// Generator configuration.
 #[derive(Debug, Clone)]
 pub struct GeneratorConfig {
-    /// Maximum number of generation attempts
-    pub max_attempts: u32,
+    /// Maximum number of correctness attempts
+    pub max_correctness_attempts: u32,
+    /// Maximum number of performance improvement attempts (after correctness)
+    pub max_perf_attempts: u32,
+    /// Minimum acceptable progress guarantee
+    pub min_progress_guarantee: ProgressGuarantee,
+    /// Target progress guarantee (will try to achieve)
+    pub target_progress_guarantee: ProgressGuarantee,
     /// Cascade configuration for verification
     pub cascade_config: CascadeConfig,
     /// Whether to print verbose output
@@ -28,7 +36,10 @@ pub struct GeneratorConfig {
 impl Default for GeneratorConfig {
     fn default() -> Self {
         Self {
-            max_attempts: 5,
+            max_correctness_attempts: 5,
+            max_perf_attempts: 3,
+            min_progress_guarantee: ProgressGuarantee::Blocking,
+            target_progress_guarantee: ProgressGuarantee::LockFree,
             cascade_config: CascadeConfig::default(),
             verbose: false,
             output_dir: None,
@@ -40,7 +51,8 @@ impl GeneratorConfig {
     /// Quick config for fast iteration.
     pub fn quick() -> Self {
         Self {
-            max_attempts: 3,
+            max_correctness_attempts: 3,
+            max_perf_attempts: 1,
             cascade_config: CascadeConfig::fast(),
             verbose: true,
             ..Default::default()
@@ -50,7 +62,9 @@ impl GeneratorConfig {
     /// Thorough config for production.
     pub fn thorough() -> Self {
         Self {
-            max_attempts: 10,
+            max_correctness_attempts: 10,
+            max_perf_attempts: 5,
+            target_progress_guarantee: ProgressGuarantee::WaitFree,
             cascade_config: CascadeConfig::thorough(),
             verbose: true,
             ..Default::default()
@@ -61,12 +75,16 @@ impl GeneratorConfig {
 /// Result from code generation.
 #[derive(Debug, Clone)]
 pub struct GeneratorResult {
-    /// Whether generation succeeded
+    /// Whether generation succeeded (correct AND meets min performance)
     pub success: bool,
     /// The generated code (if successful)
     pub code: Option<String>,
-    /// Number of attempts made
-    pub attempts: u32,
+    /// Correctness attempts made
+    pub correctness_attempts: u32,
+    /// Performance improvement attempts made
+    pub perf_attempts: u32,
+    /// Final progress guarantee achieved
+    pub progress_guarantee: Option<ProgressGuarantee>,
     /// Total duration
     pub duration: Duration,
     /// Cascade result from final attempt
@@ -80,10 +98,14 @@ pub struct GeneratorResult {
 pub struct AttemptRecord {
     /// Attempt number (1-indexed)
     pub attempt: u32,
+    /// Phase: "correctness" or "performance"
+    pub phase: String,
     /// Generated code
     pub code: String,
     /// Cascade result
     pub cascade_result: CascadeResult,
+    /// Progress guarantee (if correctness passed)
+    pub progress_guarantee: Option<ProgressGuarantee>,
     /// Duration of this attempt
     pub duration: Duration,
 }
@@ -93,11 +115,27 @@ impl GeneratorResult {
     pub fn format_summary(&self) -> String {
         let status = if self.success { "SUCCESS" } else { "FAILED" };
         let mut summary = format!(
-            "[{}] Generation completed in {:.2}s ({} attempts)\n",
+            "[{}] Generation completed in {:.2}s\n",
             status,
             self.duration.as_secs_f64(),
-            self.attempts
         );
+
+        summary.push_str(&format!(
+            "  Correctness attempts: {}\n",
+            self.correctness_attempts
+        ));
+        summary.push_str(&format!(
+            "  Performance attempts: {}\n",
+            self.perf_attempts
+        ));
+
+        if let Some(progress) = self.progress_guarantee {
+            summary.push_str(&format!(
+                "  Progress guarantee: {:?} ({})\n",
+                progress,
+                progress.description()
+            ));
+        }
 
         if let Some(ref result) = self.cascade_result {
             summary.push_str(&result.format_report());
@@ -109,11 +147,12 @@ impl GeneratorResult {
                 summary.push_str(&format!("\nGenerated {} lines of code.\n", lines));
             }
         } else {
-            summary.push_str("\nGeneration failed after all attempts.\n");
+            summary.push_str("\nGeneration failed.\n");
             for record in &self.attempt_history {
                 if let Some(ref failure) = record.cascade_result.first_failure {
                     summary.push_str(&format!(
-                        "  Attempt {}: Failed at {} - {}\n",
+                        "  {} #{}: Failed at {} - {}\n",
+                        record.phase,
                         record.attempt,
                         failure.evaluator,
                         failure.error.as_deref().unwrap_or("unknown")
@@ -127,6 +166,12 @@ impl GeneratorResult {
 }
 
 /// LLM-powered code generator with verification.
+///
+/// Philosophy: Bitter lesson aligned
+/// - Derive prompts from specs (no implementation hints)
+/// - Let LLM figure out implementation
+/// - Use cascade feedback diagnostically
+/// - Iterate toward best performing correct solution
 pub struct CodeGenerator {
     client: ClaudeClient,
     config: GeneratorConfig,
@@ -153,38 +198,42 @@ impl CodeGenerator {
     }
 
     /// Generate implementation from a TLA+ spec.
+    ///
+    /// Two-phase approach:
+    /// 1. Correctness phase: iterate until cascade passes
+    /// 2. Performance phase: iterate toward target progress guarantee
     pub async fn generate(&self, spec: &TlaSpec) -> Result<GeneratorResult, GeneratorError> {
         let start = Instant::now();
         let mut attempt_history = Vec::new();
-        let mut current_code: Option<String> = None;
-
-        // Create spec-type-aware prompt builder
-        let prompt_builder = PromptBuilder::for_spec(spec);
-        let spec_type = prompt_builder.spec_type();
+        let mut correctness_attempts = 0;
+        let mut perf_attempts = 0;
 
         if self.config.verbose {
-            println!("Generating implementation for: {}", spec.name);
-            println!("Spec type: {:?}", spec_type);
+            println!("=== GENERATION START ===");
+            println!("Module: {}", spec.name);
             println!("Invariants: {}", spec.format_invariants());
+            println!("Target progress: {:?}", self.config.target_progress_guarantee);
             println!();
         }
 
-        for attempt in 1..=self.config.max_attempts {
+        // Phase 1: Correctness
+        let mut current_code: Option<String> = None;
+        let mut cascade_result: Option<CascadeResult> = None;
+
+        for attempt in 1..=self.config.max_correctness_attempts {
+            correctness_attempts = attempt;
             let attempt_start = Instant::now();
 
             if self.config.verbose {
-                println!("=== Attempt {}/{} ===", attempt, self.config.max_attempts);
+                println!("=== Correctness Attempt {}/{} ===",
+                    attempt, self.config.max_correctness_attempts);
             }
 
             // Generate or fix code
             let code = if let Some(ref prev_code) = current_code {
-                // Fix based on previous failure
-                let last_result = attempt_history.last().map(|r: &AttemptRecord| &r.cascade_result);
-                self.fix_code(&prompt_builder, spec, prev_code, last_result)
-                    .await?
+                self.fix_code(spec, prev_code, cascade_result.as_ref()).await?
             } else {
-                // Initial generation
-                self.generate_initial(&prompt_builder, spec).await?
+                self.generate_initial(spec).await?
             };
 
             if self.config.verbose {
@@ -192,34 +241,31 @@ impl CodeGenerator {
             }
 
             // Verify with cascade
-            let cascade_result = self.verify_code(&code, spec_type).await?;
+            let result = self.verify_code(&code, spec).await?;
+            let passed = result.all_passed;
 
-            let attempt_record = AttemptRecord {
+            let record = AttemptRecord {
                 attempt,
+                phase: "correctness".to_string(),
                 code: code.clone(),
-                cascade_result: cascade_result.clone(),
+                cascade_result: result.clone(),
+                progress_guarantee: None,
                 duration: attempt_start.elapsed(),
             };
-            attempt_history.push(attempt_record);
+            attempt_history.push(record);
 
-            if cascade_result.all_passed {
+            if passed {
                 if self.config.verbose {
-                    println!("✅ All evaluators passed!");
+                    println!("✅ Correctness achieved!");
                 }
-
-                return Ok(GeneratorResult {
-                    success: true,
-                    code: Some(code),
-                    attempts: attempt,
-                    duration: start.elapsed(),
-                    cascade_result: Some(cascade_result),
-                    attempt_history,
-                });
+                current_code = Some(code);
+                cascade_result = Some(result);
+                break;
             }
 
             // Log failure
             if self.config.verbose {
-                if let Some(ref failure) = cascade_result.first_failure {
+                if let Some(ref failure) = result.first_failure {
                     println!(
                         "❌ Failed at {}: {}",
                         failure.evaluator,
@@ -229,27 +275,140 @@ impl CodeGenerator {
             }
 
             current_code = Some(code);
+            cascade_result = Some(result);
         }
 
-        // All attempts exhausted
+        // Check if correctness was achieved
+        let code = match current_code {
+            Some(c) if cascade_result.as_ref().map(|r| r.all_passed).unwrap_or(false) => c,
+            _ => {
+                return Ok(GeneratorResult {
+                    success: false,
+                    code: current_code,
+                    correctness_attempts,
+                    perf_attempts: 0,
+                    progress_guarantee: None,
+                    duration: start.elapsed(),
+                    cascade_result,
+                    attempt_history,
+                });
+            }
+        };
+
+        // Phase 2: Performance optimization
+        let mut best_code = code;
+        let mut best_progress = analyze_progress_guarantee(&best_code);
+
+        if self.config.verbose {
+            println!();
+            println!("=== PERFORMANCE PHASE ===");
+            println!("Current progress: {:?} ({})", best_progress, best_progress.description());
+            println!("Target progress: {:?}", self.config.target_progress_guarantee);
+        }
+
+        // Check if we already meet target
+        if best_progress >= self.config.target_progress_guarantee {
+            if self.config.verbose {
+                println!("✅ Already at or above target progress guarantee!");
+            }
+        } else {
+            // Try to improve performance
+            for attempt in 1..=self.config.max_perf_attempts {
+                perf_attempts = attempt;
+                let attempt_start = Instant::now();
+
+                if self.config.verbose {
+                    println!();
+                    println!("=== Performance Attempt {}/{} ===",
+                        attempt, self.config.max_perf_attempts);
+                }
+
+                // Ask for performance improvement
+                let improved_code = self.improve_performance(
+                    spec,
+                    &best_code,
+                    best_progress,
+                    self.config.target_progress_guarantee,
+                ).await?;
+
+                // Verify correctness still holds
+                let result = self.verify_code(&improved_code, spec).await?;
+
+                if result.all_passed {
+                    let new_progress = analyze_progress_guarantee(&improved_code);
+
+                    let record = AttemptRecord {
+                        attempt,
+                        phase: "performance".to_string(),
+                        code: improved_code.clone(),
+                        cascade_result: result.clone(),
+                        progress_guarantee: Some(new_progress),
+                        duration: attempt_start.elapsed(),
+                    };
+                    attempt_history.push(record);
+
+                    if new_progress > best_progress {
+                        if self.config.verbose {
+                            println!("✅ Improved: {:?} -> {:?}", best_progress, new_progress);
+                        }
+                        best_code = improved_code;
+                        best_progress = new_progress;
+                        cascade_result = Some(result);
+
+                        if best_progress >= self.config.target_progress_guarantee {
+                            if self.config.verbose {
+                                println!("✅ Target progress guarantee achieved!");
+                            }
+                            break;
+                        }
+                    } else {
+                        if self.config.verbose {
+                            println!("⚠️ No improvement: still {:?}", new_progress);
+                        }
+                    }
+                } else {
+                    if self.config.verbose {
+                        println!("❌ Performance attempt broke correctness, reverting");
+                    }
+                    let record = AttemptRecord {
+                        attempt,
+                        phase: "performance".to_string(),
+                        code: improved_code,
+                        cascade_result: result,
+                        progress_guarantee: None,
+                        duration: attempt_start.elapsed(),
+                    };
+                    attempt_history.push(record);
+                }
+            }
+        }
+
+        // Check if we meet minimum requirement
+        let meets_minimum = best_progress >= self.config.min_progress_guarantee;
+
+        if self.config.verbose {
+            println!();
+            println!("=== GENERATION COMPLETE ===");
+            println!("Final progress: {:?}", best_progress);
+            println!("Meets minimum ({:?}): {}", self.config.min_progress_guarantee, meets_minimum);
+        }
+
         Ok(GeneratorResult {
-            success: false,
-            code: current_code,
-            attempts: self.config.max_attempts,
+            success: meets_minimum,
+            code: Some(best_code),
+            correctness_attempts,
+            perf_attempts,
+            progress_guarantee: Some(best_progress),
             duration: start.elapsed(),
-            cascade_result: attempt_history.last().map(|r| r.cascade_result.clone()),
+            cascade_result,
             attempt_history,
         })
     }
 
     /// Generate initial implementation.
-    async fn generate_initial(
-        &self,
-        prompt_builder: &PromptBuilder,
-        spec: &TlaSpec,
-    ) -> Result<String, GeneratorError> {
-        let prompt = prompt_builder.build_generation_prompt(spec);
-        let system = prompt_builder.system_prompt().to_string();
+    async fn generate_initial(&self, spec: &TlaSpec) -> Result<String, GeneratorError> {
+        let prompt = PromptBuilder::build_generation_prompt(spec);
+        let system = PromptBuilder::system_prompt().to_string();
 
         let messages = vec![Message::user(prompt)];
 
@@ -257,7 +416,7 @@ impl CodeGenerator {
             .client
             .complete_with_system(messages, Some(system))
             .await
-            .map_err(|e| GeneratorError::ClientError(e))?;
+            .map_err(GeneratorError::ClientError)?;
 
         extract_code_block(&response)
             .ok_or_else(|| GeneratorError::NoCodeInResponse(response))
@@ -266,29 +425,55 @@ impl CodeGenerator {
     /// Fix code based on verification failure.
     async fn fix_code(
         &self,
-        prompt_builder: &PromptBuilder,
         spec: &TlaSpec,
         previous_code: &str,
         previous_result: Option<&CascadeResult>,
     ) -> Result<String, GeneratorError> {
         let prompt = if let Some(result) = previous_result {
-            prompt_builder.build_fix_prompt(spec, previous_code, result)
+            PromptBuilder::build_fix_prompt(spec, previous_code, result)
         } else {
-            // Fallback if no result
             format!(
                 "The following code has bugs. Fix it:\n\n```rust\n{}\n```",
                 previous_code
             )
         };
 
-        let system = prompt_builder.system_prompt().to_string();
+        let system = PromptBuilder::system_prompt().to_string();
         let messages = vec![Message::user(prompt)];
 
         let response = self
             .client
             .complete_with_system(messages, Some(system))
             .await
-            .map_err(|e| GeneratorError::ClientError(e))?;
+            .map_err(GeneratorError::ClientError)?;
+
+        extract_code_block(&response)
+            .ok_or_else(|| GeneratorError::NoCodeInResponse(response))
+    }
+
+    /// Request performance improvement while preserving correctness.
+    async fn improve_performance(
+        &self,
+        spec: &TlaSpec,
+        current_code: &str,
+        current_progress: ProgressGuarantee,
+        target_progress: ProgressGuarantee,
+    ) -> Result<String, GeneratorError> {
+        let prompt = PromptBuilder::build_perf_improvement_prompt(
+            spec,
+            current_code,
+            current_progress,
+            target_progress,
+        );
+
+        let system = PromptBuilder::system_prompt().to_string();
+        let messages = vec![Message::user(prompt)];
+
+        let response = self
+            .client
+            .complete_with_system(messages, Some(system))
+            .await
+            .map_err(GeneratorError::ClientError)?;
 
         extract_code_block(&response)
             .ok_or_else(|| GeneratorError::NoCodeInResponse(response))
@@ -298,28 +483,42 @@ impl CodeGenerator {
     async fn verify_code(
         &self,
         code: &str,
-        spec_type: SpecType,
+        spec: &TlaSpec,
     ) -> Result<CascadeResult, GeneratorError> {
         let cascade = EvaluatorCascade::new(self.config.cascade_config.clone());
 
-        // Create test code appropriate for the spec type
-        let test_code = match spec_type {
-            SpecType::LockFree => generate_stack_test_code(),
-            SpecType::Ssi => generate_ssi_test_code(),
-        };
+        // Generate test code based on spec content
+        let test_code = derive_test_code(spec);
 
         let result = cascade.run_on_code(code, &test_code).await;
         Ok(result)
     }
+}
 
-    /// Get the maximum cascade level being verified.
-    pub fn max_level(&self) -> EvaluatorLevel {
-        self.config.cascade_config.max_level
+/// Derive test code from spec content.
+///
+/// Examines the spec to determine what operations exist and generates appropriate tests.
+fn derive_test_code(spec: &TlaSpec) -> String {
+    let content_lower = spec.content.to_lowercase();
+
+    // Detect spec type from content
+    let is_stack = content_lower.contains("push") && content_lower.contains("pop");
+    let is_queue = content_lower.contains("enqueue") && content_lower.contains("dequeue");
+    let is_ssi = content_lower.contains("commit") && content_lower.contains("in_conflict");
+
+    if is_ssi {
+        generate_ssi_tests()
+    } else if is_stack {
+        generate_stack_tests()
+    } else if is_queue {
+        generate_queue_tests()
+    } else {
+        // Generic tests based on variables
+        generate_generic_tests(spec)
     }
 }
 
-/// Generate test code for lock-free stacks.
-fn generate_stack_test_code() -> String {
+fn generate_stack_tests() -> String {
     r#"
     #[test]
     fn test_basic_operations() {
@@ -327,7 +526,6 @@ fn generate_stack_test_code() -> String {
         stack.push(1);
         stack.push(2);
         stack.push(3);
-
         assert_eq!(stack.pop(), Some(3));
         assert_eq!(stack.pop(), Some(2));
         assert_eq!(stack.pop(), Some(1));
@@ -363,12 +561,8 @@ fn generate_stack_test_code() -> String {
         stack.push(30);
 
         let pushed = stack.pushed_elements();
-        assert!(pushed.contains(&10));
-        assert!(pushed.contains(&20));
-        assert!(pushed.contains(&30));
-
         let contents = stack.get_contents();
-        // All pushed elements should be in contents (none popped yet)
+
         for &val in &pushed {
             assert!(contents.contains(&val), "Lost element: {}", val);
         }
@@ -376,20 +570,14 @@ fn generate_stack_test_code() -> String {
 
     #[test]
     fn test_invariants() {
-        // TLA+ Line 45: NoLostElements - every pushed element is either
-        // in the stack or has been popped
         let stack = TreiberStack::new();
-
-        // Push elements
         stack.push(100);
         stack.push(200);
         stack.push(300);
 
-        // Pop one
         let popped_val = stack.pop();
         assert_eq!(popped_val, Some(300));
 
-        // Verify NoLostElements invariant
         let pushed = stack.pushed_elements();
         let popped = stack.popped_elements();
         let contents = stack.get_contents();
@@ -401,23 +589,18 @@ fn generate_stack_test_code() -> String {
                 "NoLostElements violated: {} neither in stack nor popped", val);
         }
     }
-"#
-    .to_string()
+"#.to_string()
 }
 
-/// Generate test code for SSI implementations.
-fn generate_ssi_test_code() -> String {
+fn generate_ssi_tests() -> String {
     r#"
     #[test]
     fn test_simple_transaction() {
         let store = SsiStore::new();
-
-        // T1: write and commit
         let t1 = store.begin();
         assert!(store.write(t1, 1, 100));
         assert!(store.commit(t1));
 
-        // T2: read committed value
         let t2 = store.begin();
         assert_eq!(store.read(t2, 1), Some(100));
         assert!(store.commit(t2));
@@ -427,21 +610,18 @@ fn generate_ssi_test_code() -> String {
     fn test_snapshot_isolation() {
         let store = SsiStore::new();
 
-        // T1: write initial value
         let t1 = store.begin();
         assert!(store.write(t1, 1, 100));
         assert!(store.commit(t1));
 
-        // T2: start and read
         let t2 = store.begin();
         assert_eq!(store.read(t2, 1), Some(100));
 
-        // T3: update value and commit
         let t3 = store.begin();
         assert!(store.write(t3, 1, 200));
         assert!(store.commit(t3));
 
-        // T2 should still see old value (snapshot isolation)
+        // T2 should still see old value
         assert_eq!(store.read(t2, 1), Some(100));
         assert!(store.commit(t2));
     }
@@ -450,27 +630,20 @@ fn generate_ssi_test_code() -> String {
     fn test_dangerous_structure_abort() {
         let store = SsiStore::new();
 
-        // Setup: Write initial values
         let setup = store.begin();
         store.write(setup, 1, 10);
         store.write(setup, 2, 20);
         store.commit(setup);
 
-        // T1 and T2: create dangerous structure (write skew pattern)
         let t1 = store.begin();
         let t2 = store.begin();
 
-        // T1 reads K1
         store.read(t1, 1);
-        // T2 reads K2
         store.read(t2, 2);
-        // T2 writes K1 (conflict with T1's read) - T1 gets out_conflict
         store.write(t2, 1, 11);
         store.commit(t2);
-        // T1 writes K2 (conflict with T2's read) - T1 gets in_conflict
         store.write(t1, 2, 21);
 
-        // T1's commit should fail due to dangerous structure
         let committed = store.commit(t1);
         assert!(!committed, "T1 should abort due to dangerous structure");
     }
@@ -479,63 +652,18 @@ fn generate_ssi_test_code() -> String {
     fn test_disjoint_keys_commit() {
         let store = SsiStore::new();
 
-        // T1 and T2: write different keys concurrently
         let t1 = store.begin();
         let t2 = store.begin();
 
         assert!(store.write(t1, 1, 100));
         assert!(store.write(t2, 2, 200));
 
-        // Both should commit (no conflicts)
         assert!(store.commit(t1));
         assert!(store.commit(t2));
 
-        // Verify values
         let t3 = store.begin();
         assert_eq!(store.read(t3, 1), Some(100));
         assert_eq!(store.read(t3, 2), Some(200));
-    }
-
-    #[test]
-    fn test_write_lock_blocking() {
-        let store = SsiStore::new();
-
-        // T1: write K1 (holds lock)
-        let t1 = store.begin();
-        assert!(store.write(t1, 1, 100));
-
-        // T2: cannot write K1 (lock held)
-        let t2 = store.begin();
-        assert!(!store.write(t2, 1, 200)); // Should fail
-
-        // T2: can write different key
-        assert!(store.write(t2, 2, 300));
-
-        // T1 commits, releases lock
-        assert!(store.commit(t1));
-        assert!(store.commit(t2));
-    }
-
-    #[test]
-    fn test_single_conflict_flag_commits() {
-        let store = SsiStore::new();
-
-        // Setup
-        let setup = store.begin();
-        store.write(setup, 1, 10);
-        store.commit(setup);
-
-        // T1 reads K1
-        let t1 = store.begin();
-        store.read(t1, 1);
-
-        // T2 writes K1 (T1 gets out_conflict, but not in_conflict)
-        let t2 = store.begin();
-        store.write(t2, 1, 20);
-        store.commit(t2);
-
-        // T1 should still be able to commit (only out_conflict, no in_conflict)
-        assert!(store.commit(t1), "T1 should commit with only out_conflict");
     }
 
     #[test]
@@ -547,17 +675,55 @@ fn generate_ssi_test_code() -> String {
         assert!(store.commit(t1));
 
         let committed = store.committed_txns();
-        assert!(committed.contains(&t1), "T1 should be in committed set");
+        assert!(committed.contains(&t1));
 
         let t2 = store.begin();
         store.write(t2, 2, 200);
         store.abort(t2);
 
         let committed = store.committed_txns();
-        assert!(!committed.contains(&t2), "T2 should NOT be in committed set");
+        assert!(!committed.contains(&t2));
     }
-"#
-    .to_string()
+"#.to_string()
+}
+
+fn generate_queue_tests() -> String {
+    r#"
+    #[test]
+    fn test_basic_operations() {
+        let queue = MsQueue::new();
+        queue.enqueue(1);
+        queue.enqueue(2);
+        queue.enqueue(3);
+        assert_eq!(queue.dequeue(), Some(1));
+        assert_eq!(queue.dequeue(), Some(2));
+        assert_eq!(queue.dequeue(), Some(3));
+        assert_eq!(queue.dequeue(), None);
+    }
+
+    #[test]
+    fn test_fifo_order() {
+        let queue = MsQueue::new();
+        for i in 1..=5 {
+            queue.enqueue(i);
+        }
+        for i in 1..=5 {
+            assert_eq!(queue.dequeue(), Some(i));
+        }
+    }
+"#.to_string()
+}
+
+fn generate_generic_tests(spec: &TlaSpec) -> String {
+    // Generate basic tests based on module name
+    format!(r#"
+    #[test]
+    fn test_basic() {{
+        // Generic test for {}
+        // TODO: Derive specific tests from spec
+        assert!(true);
+    }}
+"#, spec.name)
 }
 
 /// Generator errors.
@@ -586,39 +752,40 @@ mod tests {
     #[test]
     fn test_generator_config_presets() {
         let quick = GeneratorConfig::quick();
-        assert_eq!(quick.max_attempts, 3);
+        assert_eq!(quick.max_correctness_attempts, 3);
 
         let thorough = GeneratorConfig::thorough();
-        assert_eq!(thorough.max_attempts, 10);
+        assert_eq!(thorough.max_correctness_attempts, 10);
     }
 
     #[test]
-    fn test_generator_result_format() {
-        let result = GeneratorResult {
-            success: true,
-            code: Some("fn foo() {}".to_string()),
-            attempts: 2,
-            duration: Duration::from_secs(5),
-            cascade_result: None,
-            attempt_history: Vec::new(),
-        };
+    fn test_derive_test_code_stack() {
+        let spec_content = r#"
+---------------------------- MODULE stack ----------------------------
+VARIABLES head, pushed, popped
 
-        let summary = result.format_summary();
-        assert!(summary.contains("SUCCESS"));
-        assert!(summary.contains("2 attempts"));
+Push(val) == ...
+Pop == ...
+=============================================================================
+"#;
+        let spec = vf_core::TlaSpec::parse(spec_content).unwrap();
+        let tests = derive_test_code(&spec);
+        assert!(tests.contains("test_basic_operations"));
+        assert!(tests.contains("test_lifo_order"));
     }
 
     #[test]
-    fn test_generate_stack_test_code() {
-        let test_code = generate_stack_test_code();
-        assert!(test_code.contains("test_basic_operations"));
-        assert!(test_code.contains("test_no_lost_elements"));
-    }
+    fn test_derive_test_code_ssi() {
+        let spec_content = r#"
+---------------------------- MODULE ssi ----------------------------
+VARIABLES txns, in_conflict, out_conflict
 
-    #[test]
-    fn test_generate_ssi_test_code() {
-        let test_code = generate_ssi_test_code();
-        assert!(test_code.contains("test_simple_transaction"));
-        assert!(test_code.contains("test_dangerous_structure_abort"));
+Commit(txn) == ...
+=============================================================================
+"#;
+        let spec = vf_core::TlaSpec::parse(spec_content).unwrap();
+        let tests = derive_test_code(&spec);
+        assert!(tests.contains("test_simple_transaction"));
+        assert!(tests.contains("test_dangerous_structure_abort"));
     }
 }

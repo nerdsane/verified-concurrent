@@ -22,6 +22,49 @@ Both **lock-free** and **lock-based** concurrent systems:
 3. **DST is core** - Deterministic Simulation Testing catches most issues
 4. **TigerStyle is mandatory** - Not optional guidelines, required rules
 5. **Unix philosophy** - Small, composable tools with single responsibility
+6. **Bitter lesson** - General methods + computation beat encoded knowledge
+
+## Bitter Lesson Philosophy
+
+**General methods that leverage computation scale better than hand-engineered knowledge.**
+
+Applied to this project:
+
+| Old Approach | Bitter Lesson Approach |
+|--------------|----------------------|
+| Templates with CAS patterns | Derive from spec, let LLM figure out |
+| Hints about memory ordering | State invariants, cascade verifies |
+| "How to fix" guidance | Diagnostic feedback (what failed) |
+| Implementation-specific prompts | Generic prompts from TLA+ |
+
+**Generator architecture:**
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    BITTER LESSON ALIGNED                     │
+│                                                              │
+│  1. PARSE SPEC                                               │
+│     TLA+ → {invariants, operations, state_vars}              │
+│                                                              │
+│  2. GENERIC PROMPT (no implementation hints)                 │
+│     "Implement satisfying these invariants: [from spec]"     │
+│     NOT: "Use CAS with retry loop and epoch-based GC"        │
+│                                                              │
+│  3. CASCADE FEEDBACK (diagnostic, not prescriptive)          │
+│     "Invariant NoLostElements violated at line 42"           │
+│     NOT: "Add epoch::pin() guard before the CAS"             │
+│                                                              │
+│  4. PERFORMANCE PHASE (after correctness)                    │
+│     "Your solution is Blocking, can you achieve LockFree?"   │
+│                                                              │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Two-phase generation:**
+1. **Correctness**: Iterate until cascade passes
+2. **Performance**: Iterate toward target progress guarantee (WaitFree > LockFree > ObstructionFree > Blocking)
+
+**Key insight**: Any implementation that passes the cascade is correct. Among correct implementations, prefer better performing ones.
 
 ## Unix Philosophy / Separation of Concerns
 
