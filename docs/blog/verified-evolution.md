@@ -1,266 +1,245 @@
 # Verified Evolution: What If Formal Specs Were Fitness Functions?
 
-*From BitsEvolve to Self-Optimizing Distributed Systems*
+*Sesh Nalla | February 2026 | read-time | 18 min*
 
-## Part 1: The Puzzle
+## The question
 
-[BitsEvolve](https://www.datadoghq.com/blog/engineering/self-optimizing-system/) taught Go code to optimize itself — 25-90% speedups in bit manipulation, tag normalization, secure hashing. But it had no correctness guarantee. The fitness function was "run faster," not "run correctly."
+I have been curious about something for a while. Concurrent code is uniquely difficult to get right. It is nearly impossible to intuitively reason about the behavior of a complex system of concurrently executing processes, even if it is composed of simple parts. Writing a lock-free Treiber stack that compiles is easy. Writing one that has no undefined behavior, survives every possible thread interleaving, and tolerates arbitrary faults — that is a fundamentally different problem.
 
-[ADRS](https://arxiv.org/abs/2512.14806) (AI-Driven Research for Systems) went further: LLMs discovered algorithms that beat human SOTA — 13x improvement in transaction scheduling, 35% in TCP congestion control. But these algorithms were validated by simulators, not formally proven.
+What if formal specifications — TLA+, Miri, Loom, model checkers — could serve as the fitness function for evolutionary code synthesis? Not "run faster" but "satisfy every property in the TLA+ spec, under every interleaving, in every failure mode." If I could write a specification that captured the essential safety properties of a concurrent data structure, could evolution find an implementation that satisfied them?
 
-The gap: no system evolves code with *both* performance optimization *and* formal correctness guarantees.
+I built a system to find out.
 
-**What if formal specifications — TLA+, model checkers, property-based tests — were the fitness function?**
+## Specifications as fitness landscapes
 
-## Part 2: The Insight — Specifications as Landscapes
-
-[Alp Keles argues](https://alperenkeles.com/posts/llms-could-be-but-shouldnt-be-compilers/): "If you can specify, you can build." We go further: **if you can specify formally, you can evolve.**
-
-A TLA+ specification defines *what* must be true, not *how* to achieve it. A verification cascade — rustc → Miri → Loom → DST → Stateright → Kani → Verus — creates a gradient from "doesn't compile" to "formally proven." That gradient is exactly what population-based evolution needs.
+A TLA+ specification defines what must be true. It says nothing about how. A seven-level verification cascade — from the Rust compiler to an SMT theorem prover — creates something like a gradient from "doesn't compile" to "formally proven." That gradient, it seemed to me, was what population-based evolution might need.
 
 ```
 Score = 0        "doesn't compile"
-Score = 100      "compiles (rustc pass)"
-Score = 200      "no undefined behavior (Miri pass)"
-Score = 300      "correct under all interleavings (Loom pass)"
-Score = 400      "fault-tolerant (DST pass)"
-Score = 500      "spec-conformant (Stateright pass)"
-Score = 600      "bounded proof (Kani pass)"
-Score = 700      "universal proof (Verus pass)"
-Score = 700+     "correct AND fast (throughput + progress bonus)"
+Score = 100      "compiles"
+Score = 200      "no undefined behavior (Miri)"
+Score = 300      "correct under all thread interleavings (Loom)"
+Score = 400      "fault-tolerant (deterministic simulation)"
+Score = 500+     "spec-conformant, proven correct"
 ```
 
-The scoring function:
+The scoring function rewards three things: how far up the cascade you get, how many invariants you satisfy, and what progress guarantee your code provides. Lock-free code scores higher than mutex-based code, because the whole point is to evolve *away* from locks:
 
 ```
 score(c) = (level_reached + 1) * 100
          + invariants_passed * 10
-         + progress_ordinal * 25       // WaitFree=3, LockFree=2, Blocking=0
+         + progress_ordinal * 25
 ```
 
-A Mutex-based Treiber stack that passes all levels scores 440 (Blocking). A CAS-based lock-free stack that also passes all levels scores 490 (+50 from LockFree progress). Evolution has a clear gradient.
+A Mutex-based Treiber stack that passes all levels trivially scores 440. A CAS-based lock-free version that also passes scores 490. Evolution has a gradient to follow.
 
-## Part 3: The System — Rust-Native, Multi-Model
+Or so I thought.
 
-We built `vf-evolve` as a Rust-native binary — no Python orchestration layer. The evolution engine, verification cascade, and LLM client are all compiled Rust, calling the Anthropic API directly via `reqwest`.
+## The system
 
-### Multi-Model Bandit Ensemble
+I built `vf-evolve` as a Rust-native binary — no Python orchestration. The evolution engine, verification cascade, and LLM client are all compiled Rust calling the Anthropic API directly. I wanted the verification to be fast enough that generations could run in under a minute, not hours.
 
-The key architectural choice: **each island in the population uses a different LLM model**, and a UCB1 bandit algorithm adapts model selection based on which models produce higher-scoring candidates.
-
-```
-┌─────────────────────────────────────────────────────────┐
-│                    vf-evolve (Rust)                      │
-│                                                         │
-│  Island 0        Island 1        Island 2    Island 3   │
-│  ┌──────┐       ┌──────┐       ┌──────┐    ┌──────┐   │
-│  │ Opus │       │Sonnet│       │Haiku │    │Sonnet│   │
-│  │ t=0.7│       │ t=0.8│       │ t=1.0│    │ t=1.0│   │
-│  └──┬───┘       └──┬───┘       └──┬───┘    └──┬───┘   │
-│     │  mutate      │  mutate      │  mutate    │       │
-│     ▼              ▼              ▼            ▼       │
-│  ┌────────────────────────────────────────────────┐    │
-│  │     Verification Cascade (rustc→miri→loom→DST) │    │
-│  └────────────────────────────────────────────────┘    │
-│     │              │              │            │       │
-│     ▼  score       ▼  score       ▼  score     ▼      │
-│  ┌────────────────────────────────────────────────┐    │
-│  │  UCB1 Bandit: track avg score per model        │    │
-│  │  70% exploit best model, 30% explore others    │    │
-│  └────────────────────────────────────────────────┘    │
-│                                                         │
-│  Migration: best candidates move between islands        │
-│  every N generations (ring topology)                    │
-└─────────────────────────────────────────────────────────┘
-```
-
-**Why multiple models matter:** Different models have different failure modes. Opus produces higher-quality code but is slower and more expensive. Haiku is cheap and fast but generates more compile errors. Sonnet at high temperature explores wild designs that occasionally discover novel patterns. The bandit learns which model is most productive for each task.
-
-### The Default Ensemble
-
-| Island | Model | Temperature | Role |
-|--------|-------|------------|------|
-| 0 | Claude Opus 4 | 0.7 | Highest quality, precision mutations |
-| 1 | Claude Sonnet 4 | 0.8 | Balanced speed + capability |
-| 2 | Claude Haiku 4.5 | 1.0 | Cheapest, maximum diversity |
-| 3 | Claude Sonnet 4 | 1.0 | Exploration via high temperature |
-
-### Task Specifications
-
-Every evolution task starts with a Lamport-style prose problem statement (PROBLEM.md) defining safety properties, liveness properties, performance dimensions, and what is NOT specified. This follows [Lamport's advice](https://lamport.azurewebsites.net/pubs/state-the-problem.pdf): "State the problem before describing the solution."
-
-The pipeline:
-```
-Prose problem statement (PROBLEM.md)
-    ↓ formalize
-TLA+ specification (specs/distributed/*.tla)
-    ↓ compile to tests
-Trait specification (trait_spec.rs)
-    ↓ guides
-Evolution (vf-evolve binary)
-    ↓ produces
-Verified implementation (best.rs)
-```
-
-### Evolution Targets
-
-We built 17 tasks across four categories:
-
-| Category | Tasks | Seed | What Evolves |
-|----------|-------|------|-------------|
-| Lock-free (8) | treiber_stack, ring_buffer, linked_list, radix_tree, io_buffer, epoch_gc, pagecache, btree_plus | Mutex-based | CAS strategy, memory reclamation, backoff |
-| SSI (1) | cross_shard_ssi | Mutex-based | Conflict detection, snapshot isolation |
-| Distributed (3) | raft_election, two_phase_commit, **raft_consensus** | Mutex-based | Timeout strategy, recovery logic, log replication |
-| ADRS (5) | txn_scheduling, tcp_congestion, load_balancing, cloud_scheduling, llm_sql_cache | Greedy baseline (now Rust) | Algorithm parameters |
-
-New since the initial post:
-- **raft_consensus**: Full Raft capstone with election + log replication + commit safety + all 5 Raft paper invariants (TLA+ spec: 350 lines, 12 tests)
-- **All 5 ADRS tasks ported from Python to Rust**: now run through the same verification cascade as lock-free tasks
-- Three new `vf-evolve` flags: `--stepping-stones`, `--seed`, `--inject-patterns`
-
-Each Rust task has a TLA+ spec with EVALUATOR MAPPING comments linking invariants to verification levels.
-
-## Part 4: Results — Full Problem Set (17 Tasks, 18 Runs)
-
-We ran **all 17 tasks** through the cascade: 8 lock-free, 4 distributed (including the new Raft consensus capstone), and 5 ADRS domain problems ported from Python to Rust. Total: ~350 LLM evaluations, ~45 minutes wall clock.
-
-### Complete Results Table
-
-| Category | Task | Score | Progress | Best Model | Gen |
-|----------|------|------:|----------|-----------|----:|
-| Lock-free | treiber_stack | 160 | LockFree | opus | 1 |
-| Lock-free | linked_list | 160 | LockFree | opus | 2 |
-| Lock-free | ring_buffer | 160 | LockFree | opus | 1 |
-| Lock-free | **epoch_gc** | **270** | **LockFree** | **opus** | **7** |
-| Lock-free | btree_plus | 160 | LockFree | opus | 1 |
-| Lock-free | radix_tree | 160 | LockFree | sonnet | 1 |
-| Lock-free | pagecache | 160 | LockFree | sonnet | 4 |
-| Lock-free | io_buffer | 220 | Blocking | seed | 0 |
-| Distributed | cross_shard_ssi | 160 | LockFree | opus | 3 |
-| Distributed | raft_election | 160 | LockFree | sonnet | 1 |
-| Distributed | two_phase_commit | 160 | LockFree | sonnet | 2 |
-| Distributed | raft_consensus | 50 | LockFree | opus | 1 |
-| **ADRS** | **txn_scheduling** | **270** | **LockFree** | **haiku** | **6** |
-| **ADRS** | **tcp_congestion** | **270** | **LockFree** | **sonnet** | **2** |
-| **ADRS** | **load_balancing** | **270** | **LockFree** | **sonnet** | **3** |
-| **ADRS** | **cloud_scheduling** | **270** | **LockFree** | **haiku** | **6** |
-| ADRS | llm_sql_cache | 160 | LockFree | sonnet | 4 |
-
-### The Star: epoch_gc → Lock-Free Epoch GC (Score 270)
-
-The evolution produced a fully lock-free epoch-based garbage collector with CAS-based deferred destruction queue. Starting from a Mutex seed, by generation 7 Opus produced code that:
-- Uses `AtomicPtr` CAS loops for the deferred destruction linked list
-- Tracks pinned guards with `AtomicUsize` (no Mutex!)
-- Safely collects garbage only when pin count reaches zero
-- Passes Miri's UB checks completely
-
-This is the strongest evidence that the cascade *can* guide evolution past the Miri barrier — given the right task structure.
-
-### ADRS: Domain Problems Are Highly Accessible
-
-All 5 Python ADRS simulators were ported to Rust and 4/5 hit score 270 within 10 generations. The cascade's Miri check is trivial for pure algorithmic code (no unsafe, no raw pointers). Key insight: **Haiku won 2 ADRS tasks** (txn_scheduling, cloud_scheduling) — the $0.005/eval model beats the $0.04/eval model on simpler domain optimization.
-
-### Raft Consensus Capstone (Score 50)
-
-The most ambitious task: full Raft with election + log replication + commit safety. 6 API methods, 4 message types, 12 tests covering all 5 Raft paper invariants. Score 50 means LLM-generated code compiles with LockFree progress but fails the test suite. The complex protocol API is a different barrier than memory safety — the LLM can write CAS code but can't coordinate 5 interacting invariants simultaneously. More generations needed.
-
-### The Valley Crossing Attempt: Still Not Crossed
-
-We tested three improvements to cross the Mutex→CAS valley on treiber_stack:
-
-1. **Stepping stones** (`--stepping-stones`): score-band-specific guidance
-2. **Pattern seeding** (`--inject-patterns`): reference crossbeam-epoch CAS snippet
-3. **CAS seed** (`--seed initial_atomic.rs`): AtomicPtr stack with known UB, starting at 160
+The architectural choice I was most curious about was running multiple LLM models simultaneously. Different models have different failure modes, and I wanted to see whether the system could discover which model produces the best code for which kind of problem rather than betting on a single one.
 
 ```
-$ vf-evolve --task treiber_stack --generations 50 --stepping-stones \
-    --inject-patterns --seed initial_atomic.rs --islands 2
-
-Seed: score=160.0 correct=false level=0 progress=LockFree
-                                   ↑ starts on CAS side of valley
-
-Gen  1 | best=160.0 (LockFree) | all 4 models at 160
-Gen 10 | best=160.0 (LockFree) | all 4 models at 160
-Gen 25 | best=160.0 (LockFree) | all 4 models at 160
-Gen 50 | best=160.0 (LockFree) | all 4 models at 160
-
-Valley NOT crossed. 101 evaluations, all stuck at 160.
+┌────────────────────────────────────────────────────┐
+│                   vf-evolve (Rust)                  │
+│                                                     │
+│  Island 0       Island 1       Island 2   Island 3  │
+│  ┌──────┐      ┌──────┐      ┌──────┐   ┌──────┐  │
+│  │ Opus │      │Sonnet│      │Haiku │   │Sonnet│  │
+│  │ t=0.7│      │ t=0.8│      │ t=1.0│   │ t=1.0│  │
+│  └──┬───┘      └──┬───┘      └──┬───┘   └──┬───┘  │
+│     ▼  mutate     ▼  mutate     ▼  mutate   ▼      │
+│  ┌──────────────────────────────────────────────┐   │
+│  │   Verification Cascade (rustc→miri→loom→DST) │   │
+│  └──────────────────────────────────────────────┘   │
+│     ▼  score      ▼  score      ▼  score     ▼     │
+│  ┌──────────────────────────────────────────────┐   │
+│  │  UCB1 Bandit: concentrate compute on best    │   │
+│  └──────────────────────────────────────────────┘   │
+└────────────────────────────────────────────────────┘
 ```
 
-**Why?** Every LLM-generated CAS variant has subtle memory reclamation UB that Miri catches. The models can write correct-looking `compare_exchange` loops but can't produce Miri-clean `unsafe` deferred destruction. The `patterns.rs` template helped the LLM generate crossbeam-epoch style code, but the epoch GC *usage* still had UB.
+A UCB1 bandit algorithm tracks which model produces the highest-scoring candidates and concentrates compute accordingly — 70% exploitation, 30% exploration. This turned out to matter more than I expected.
 
-The valley is real but **not universal** — epoch_gc crossed it. The difference: epoch_gc's API is *about* memory reclamation, so the LLM is forced to focus on exactly the right problem.
+Every task starts with a Lamport-style prose problem statement — safety properties, liveness properties, performance dimensions, and crucially, what is *not* specified. The pipeline runs from prose to TLA+ to Rust test harness to evolution to verified implementation.
 
-### Model Performance Across All Tasks
+### Richer feedback
 
-| Model | Wins (best on task) | Strengths |
-|-------|-------------------:|-----------|
-| Opus | 6/17 (35%) | Complex lock-free tasks (epoch_gc, btree_plus, linked_list) |
-| Sonnet | 7/17 (41%) | Most consistent across all categories |
-| Haiku | 2/17 (12%) | ADRS domain optimization (cheapest model!) |
-| Seed | 2/17 (12%) | io_buffer, raft_consensus (unbeaten) |
+An early run made it clear that telling the LLM "Miri failed" was not enough. The LLM would change something unrelated and fail in the same way. So I rewrote the feedback mechanism to return structured diagnostics from every cascade level — not just the first failure, but every level's pass/fail status with up to 2000 characters of Miri's UB report or Loom's interleaving trace. The prompt now includes something like:
 
-### Cost Analysis (full problem set)
-
-| Resource | Amount |
-|----------|--------|
-| Total runs | 18 |
-| Total evaluations | ~350 |
-| Wall time | ~45 minutes |
-| Cascade time (avg) | ~35s/eval |
-
-## Part 5: Making It Scale (Bitter Lesson Alignment)
-
-The system is designed for compute scaling:
-
-**More generations** = more design space explored. The valley between Mutex and CAS likely needs 20-50 generations to cross, based on the complexity of producing correct lock-free code.
-
-**More islands** = more diversity. Each island can explore a different region of the design space (different CAS strategies, different memory reclamation, different backoff).
-
-**UCB1 bandit** = automatic model allocation. If Opus consistently produces better mutations, it gets more of the compute budget. If Haiku discovers a surprising pattern, the bandit adapts.
-
-**Property-based testing** scales with compute: `VF_PROPTEST_CASES=10` for quick runs, `VF_PROPTEST_CASES=10000` for thorough verification. Proptest modules are gated with `#[cfg(not(miri))]` so they don't slow down the Miri level.
-
-**Counterexample accumulation** (designed, not yet triggered): when Stateright finds an invariant violation, the counterexample trace becomes a regression test. Future generations must pass all accumulated tests. The fitness landscape sharpens monotonically.
-
-## Part 6: The Arc — Self-Optimizing Distributed Systems
-
-| System | What It Evolves | Correctness | Performance | LLM Role |
-|--------|----------------|-------------|-------------|----------|
-| **BitsEvolve** | Go bit manipulation | None (tests only) | 25-90% speedup | Single model |
-| **ADRS** | Python algorithms | Simulator validation | 13x, 35% improvement | Single model |
-| **Verified Evolution** | Rust concurrent code | TLA+ → 7-level cascade | Throughput benchmark | Multi-model bandit |
-
-The progression: performance-only → algorithm discovery → formally verified evolution with model diversity.
-
-### What We Built
-
-- `vf-evolve`: Rust-native evolution binary with island-model population, multi-model LLM bandit ensemble (Opus/Sonnet/Haiku), power-law selection, and 7-level verification cascade
-- `vf-cascade-runner`: Standalone cascade evaluator with adaptive start-level and counterexample extraction
-- **17 evolution tasks** with TLA+ specs, trait_spec test harnesses, and Lamport-style problem statements
-- 3 distributed protocol specs (Raft election, Two-phase commit, **Raft consensus**) with full TLA+ invariant definitions
-- **5 ADRS domain simulators** ported from Python to Rust with scoring functions
-- **Stepping stones + pattern injection** for guided evolution across fitness valleys
-
-### What's Next
-
-1. **Cross the Miri barrier** — seed with partial epoch GC scaffolding, or 200+ generation runs
-2. **Loom-level evaluation** — run full cascade through Loom to test concurrency correctness
-3. **Raft consensus deep run** — 50+ generations to evolve working log replication
-4. **Cross-task pattern transfer** — epoch_gc's CAS patterns seeding treiber_stack/ring_buffer
-5. **ADRS domain simulators** — integrate `adrs.rs` scoring into the cascade for domain-specific fitness
-6. **Production integration** — production telemetry → evolve → verify → deploy loop
-
-The self-optimizing loop:
 ```
-Production metrics → identify bottleneck → evolve algorithm under TLA+ constraints
-    → Stateright verifies invariants → benchmark confirms perf improvement
-    → deploy → observe → repeat
+## Cascade Results:
+- rustc: PASS (0.3s)
+- miri: FAIL (12.4s) — error: "Undefined Behavior: attempting to
+  retag an untagged pointer for SharedReadOnly permission"
 ```
 
-Every TLA+ spec in your codebase becomes an evolution target. The will to specify is the bottleneck, not the will to implement.
+I was hoping this would give the LLM enough to work with. Whether it does remains an open question — more on that below.
+
+### Stepping stones
+
+I also added score-band-specific guidance. Instead of a generic "improve this code," the system prompt adapts to where the candidate currently sits:
+
+- Below 100: "Fix compilation errors."
+- 100-200: "Code compiles but has UB. Fix memory safety issues flagged by Miri."
+- 200-300: "Code is memory-safe. Fix concurrency bugs flagged by Loom."
+- 300-400: "Add fault tolerance for deterministic simulation testing."
+- Above 400: "Optimize throughput. Aim for WaitFree."
+
+The idea was to narrow the LLM's focus to the specific barrier it faces rather than overwhelming it with the full problem.
+
+## The problem set
+
+I built 17 tasks across four categories, each with a TLA+ spec, a Rust test harness, and a deliberately naive seed implementation:
+
+| Category | Count | Examples | Starting point |
+|----------|-------|---------|---------------|
+| Lock-free data structures | 8 | Treiber stack, ring buffer, epoch GC, B+ tree | Mutex-based |
+| Distributed protocols | 4 | Raft election, two-phase commit, full Raft consensus | Mutex-based |
+| Domain optimization | 5 | Transaction scheduling, TCP congestion, load balancing | Greedy baselines |
+
+The domain optimization tasks were originally Python simulators. I ported them to Rust so everything could run through the same verification cascade — I was curious whether algorithmic problems and memory-safety problems would behave differently under the same fitness function.
+
+The most ambitious task was the Raft consensus capstone — full election, log replication, and commit safety with all five Raft paper invariants (ElectionSafety, LeaderAppendOnly, LogMatching, LeaderCompleteness, StateMachineSafety), a 350-line TLA+ spec, and 12 tests. I did not know what to expect from this one.
+
+## Results: running all 17 tasks
+
+I ran everything. 18 total runs (17 standard at 10 generations each, plus one 50-generation valley-crossing attempt), roughly 350 LLM evaluations, about 45 minutes of wall time.
+
+### The complete picture
+
+| Category | Task | Score | Progress | Best Model |
+|----------|------|------:|----------|-----------|
+| Lock-free | treiber_stack | 160 | LockFree | opus |
+| Lock-free | linked_list | 160 | LockFree | opus |
+| Lock-free | ring_buffer | 160 | LockFree | opus |
+| Lock-free | **epoch_gc** | **270** | **LockFree** | **opus** |
+| Lock-free | btree_plus | 160 | LockFree | opus |
+| Lock-free | radix_tree | 160 | LockFree | sonnet |
+| Lock-free | pagecache | 160 | LockFree | sonnet |
+| Lock-free | io_buffer | 220 | Blocking | seed |
+| Distributed | cross_shard_ssi | 160 | LockFree | opus |
+| Distributed | raft_election | 160 | LockFree | sonnet |
+| Distributed | two_phase_commit | 160 | LockFree | sonnet |
+| Distributed | raft_consensus | 50 | LockFree | opus |
+| Domain | **txn_scheduling** | **270** | **LockFree** | **haiku** |
+| Domain | **tcp_congestion** | **270** | **LockFree** | **sonnet** |
+| Domain | **load_balancing** | **270** | **LockFree** | **sonnet** |
+| Domain | **cloud_scheduling** | **270** | **LockFree** | **haiku** |
+| Domain | llm_sql_cache | 160 | LockFree | sonnet |
+
+The results split into three clean tiers, and I found each one interesting for different reasons.
+
+### Tier 1: The tasks that worked (score 270)
+
+Four of the five domain optimization tasks and one lock-free task hit score 270 — meaning the evolved code compiles, has no undefined behavior according to Miri, and uses lock-free operations.
+
+The domain tasks (transaction scheduling, TCP congestion, load balancing, cloud scheduling) were the most accessible, which makes sense in retrospect: these are pure algorithmic problems with no raw pointers, no unsafe blocks, no memory reclamation. The verification cascade's Miri check is trivial for safe Rust. The challenge is purely algorithmic — can the LLM produce a better scheduling heuristic? — and 4/5 times, it could.
+
+What I did not expect was which model won. Haiku — the cheapest, fastest model in the ensemble — produced the best solutions for transaction scheduling and cloud scheduling. At roughly a tenth of the cost per evaluation, the model I had included mainly for diversity turned out to be the best at domain optimization. I wonder if Haiku's directness is an advantage when the problem is straightforward: less deliberation, more generation of plausible heuristics. I would like to explore this further.
+
+The real surprise, though, was **epoch_gc**. Starting from a naive Mutex-based garbage collector, by generation 7 Opus produced a fully lock-free epoch-based GC with CAS-based deferred destruction:
+
+```rust
+// What evolution produced (simplified):
+loop {
+    let head = self.inner.deferred.load(Ordering::Acquire);
+    unsafe { (*node).next = head; }
+    match self.inner.deferred.compare_exchange(
+        head, node, Ordering::Release, Ordering::Acquire,
+    ) {
+        Ok(_) => break,
+        Err(_) => continue,
+    }
+}
+```
+
+AtomicPtr CAS loops for the deferred destruction linked list. AtomicUsize for pin counting. Safe garbage collection only when the pin count drops to zero. And it passes Miri. This was the single most encouraging result — it suggests the cascade *can* guide evolution past the memory-safety barrier, at least for certain task structures. I am still thinking about what makes epoch_gc different from the other lock-free tasks (more on that below).
+
+### Tier 2: The Miri barrier (score 160)
+
+Ten tasks plateau at exactly 160. This means the code compiles and uses lock-free operations (hence the LockFree progress bonus), but Miri catches undefined behavior. Every lock-free task except epoch_gc hits this wall.
+
+This is the finding I keep coming back to.
+
+When an LLM generates lock-free code — say, a Treiber stack using `compare_exchange` — the code *looks* correct. The CAS loop is right. The atomic orderings are plausible. If you squinted at it in a code review, you might approve it. But Miri, which tracks every memory access and aliasing constraint, catches the subtle UB that humans miss: a use-after-free in the deferred destruction path, a dangling pointer when a concurrent thread reads a node that another thread just freed.
+
+What surprised me is that 160 appears to be a *single-point attractor*. Across 350 evaluations and four different LLM models, I never saw a lock-free candidate score between 160 and 270. The cascade levels seem to act as discrete gates rather than continuous gradients. You either pass Miri completely or you fail. I had expected the cascade to provide a smoother landscape, but the data suggests something more like a staircase with very tall steps.
+
+I wonder whether this is inherent to memory safety checking (Miri either finds UB or it doesn't) or whether there is some way to extract partial progress from Miri's diagnostics that I have not yet figured out.
+
+### Tier 3: The hardest problems (score 50)
+
+Raft consensus scored 50. The LLM generates code that compiles with lock-free operations, but fails the test suite. With 6 API methods, 4 message types, and 5 interacting invariants, the coordination required seems to exceed what any model could produce in 10 generations. This appears to be a different kind of barrier from memory safety — something more like protocol complexity.
+
+I am curious whether more generations would help here, or whether the problem needs a different decomposition. Perhaps evolving the election sub-protocol first and then adding log replication would work better than asking the LLM to handle everything at once. I have not tried this yet.
+
+## The valley crossing attempt
+
+The original motivation for much of this work was a specific observation from an earlier run: the Mutex-based seed scored 440 (passes everything trivially because Mutexes are simple), while every CAS candidate scored 50-160. A 280-point fitness valley.
+
+I tried three approaches to cross it.
+
+First, **stepping stones** — the score-band-specific guidance described above. The idea was to give the LLM a focused objective at each level.
+
+Second, **pattern injection** — a reference crossbeam-epoch CAS implementation included in the prompt as a template. Not to copy verbatim, but to give the LLM a concrete example of correct memory reclamation.
+
+Third, **a CAS seed** — instead of starting from the Mutex implementation (which scores 440 but sits on the wrong side of the valley), I created `initial_atomic.rs`: an AtomicPtr-based stack with a deliberate use-after-free. It compiles, it is lock-free, but it has known UB. This starts evolution at 160, on the CAS side.
+
+```
+$ vf-evolve --task treiber_stack --generations 50 \
+    --stepping-stones --inject-patterns --seed initial_atomic.rs
+
+Seed: score=160.0 progress=LockFree  (starts on CAS side)
+
+Gen  1  | best=160.0 | all models at 160
+Gen 10  | best=160.0 | all models at 160
+Gen 25  | best=160.0 | all models at 160
+Gen 50  | best=160.0 | all models at 160
+
+Result: 101 evaluations. Valley not crossed.
+```
+
+Fifty generations. A hundred and one evaluations. Four different models. Structured feedback, stepping stones, pattern templates. The score never moved.
+
+Every LLM-generated variant used `compare_exchange` correctly. Every one had plausible memory orderings. Every one failed Miri in the same way: the deferred destruction path had UB.
+
+And yet epoch_gc crossed the same barrier. The more I think about this, the more I believe the difference comes down to task framing. epoch_gc's API is *about* memory reclamation — the LLM is forced to focus on exactly the hard problem because the entire task is "build a garbage collector." When the task is "build a stack" and safe memory reclamation is an incidental requirement, the LLM treats it as an afterthought.
+
+If that hypothesis is right, the implication is interesting: perhaps the way to cross the valley on the Treiber stack is not more generations or better prompts, but restructuring the task so that memory reclamation is the primary concern rather than a side effect. I want to try seeding with a half-built epoch GC scaffolding and see whether evolution can complete it.
+
+## What the models are good at
+
+One of the more interesting patterns from 350 evaluations across 17 tasks is how clearly the models specialize:
+
+**Opus** (35% of task wins): best on complex lock-free structures. Won epoch_gc, btree_plus, treiber_stack, linked_list. The bandit concentrated compute on Opus for these tasks, and it seems to have been the right call.
+
+**Sonnet** (41% of task wins): the most consistent across categories. Won tasks in every category — lock-free, distributed, and domain.
+
+**Haiku** (12% of task wins): outperformed models costing 8x more per evaluation on domain optimization tasks. I would not have predicted this.
+
+I am cautious about reading too much into 350 evaluations — this is suggestive, not conclusive. But the pattern of model specialization seems worth exploring further, especially the question of whether cheaper models are systematically better at problems where the algorithmic challenge dominates over the correctness challenge.
+
+## Open questions
+
+I came away from this experiment with more questions than I started with. Some that I keep thinking about:
+
+**Is the Miri barrier inherent or an artifact of my approach?** epoch_gc crossed it. Is this because garbage collection forces the LLM to think about memory reclamation, or is there something else about that particular task's structure that made it accessible? I do not yet know.
+
+**Can richer feedback help?** The structured diagnostics I added are more informative than "Miri failed," but the valley crossing result suggests they may not be informative enough. Miri's error messages point to the *symptom* (a dangling pointer dereference) rather than the *cause* (incorrect deferred destruction logic). Perhaps translating Miri output into higher-level design feedback would help.
+
+**What is the right decomposition for protocol complexity?** Raft consensus at 50 suggests that throwing the full protocol at evolution does not work in 10 generations. Would a staged approach — evolve election first, then log replication, then commit safety — produce better results? Or does the protocol need to be evolved as a whole because the invariants interact?
+
+**Does the cascade gradient improve at higher levels?** This run only went up to Miri. I am curious whether Loom (which explores thread interleavings) and DST (which injects faults) provide a smoother gradient than Miri's binary pass/fail, or whether they exhibit the same staircase pattern.
+
+## What comes next
+
+I want to cross the Miri barrier on the Treiber stack by restructuring the task around memory reclamation. I want to run the full Raft consensus for 50+ generations. And I want to push the cascade past Miri into Loom and DST to see whether the landscape changes at higher levels.
+
+Every TLA+ spec becomes an evolution target. The question is no longer whether formal specifications can serve as fitness functions — they can. The question is how to shape the landscape they create so that evolution can navigate it.
 
 ---
 
 *Sesh Nalla. February 2026.*
-*Code: [github.com/verified-concurrent](https://github.com/TODO/verified-concurrent)*
