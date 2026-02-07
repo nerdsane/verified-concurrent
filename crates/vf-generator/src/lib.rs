@@ -2,11 +2,17 @@
 //!
 //! LLM-powered code generation with spec-guided verification.
 //!
-//! This crate provides:
-//! - Claude API integration for code generation
-//! - TLA+ spec to prompt transformation
-//! - Counterexample-to-fix feedback loop
-//! - Generate → verify → fix cycle
+//! ## Philosophy: Bitter Lesson Aligned
+//!
+//! - **Derive prompts from specs** (no implementation hints)
+//! - **Let LLM figure out implementation** strategy
+//! - **Use cascade feedback diagnostically** (what failed, not how to fix)
+//! - **Performance is first-class** - iterate toward best performing correct solution
+//!
+//! ## Two-Phase Generation
+//!
+//! 1. **Correctness Phase**: Iterate until cascade passes
+//! 2. **Performance Phase**: Iterate toward target progress guarantee
 //!
 //! # Usage
 //!
@@ -16,40 +22,43 @@
 //!
 //! # With custom API key
 //! ANTHROPIC_API_KEY=sk-... cargo run -p vf-generator -- --spec specs/lockfree/treiber_stack.tla
-//!
-//! # With max retry attempts
-//! cargo run -p vf-generator -- --spec specs/lockfree/treiber_stack.tla --max-attempts 5
 //! ```
 //!
 //! # Architecture
 //!
 //! ```text
 //! ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
-//! │  TLA+ Spec  │ ──> │   Prompt    │ ──> │   Claude    │
-//! │             │     │  Generator  │     │     API     │
+//! │  TLA+ Spec  │ ──> │   Generic   │ ──> │   Claude    │
+//! │             │     │   Prompt    │     │     API     │
 //! └─────────────┘     └─────────────┘     └──────┬──────┘
 //!                                                │
-//!                                                ▼
-//! ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
-//! │   Output    │ <── │  Cascade    │ <── │  Generated  │
-//! │    Code     │     │  Verifier   │     │    Code     │
-//! └─────────────┘     └──────┬──────┘     └─────────────┘
-//!                            │
-//!                     (if fails)
-//!                            │
-//!                            ▼
-//!                     ┌─────────────┐
-//!                     │    Fix      │ ──> (retry)
-//!                     │   Prompt    │
-//!                     └─────────────┘
+//!                     ┌──────────────────────────┘
+//!                     ▼
+//!              ┌─────────────┐
+//!              │  Generated  │
+//!              │    Code     │
+//!              └──────┬──────┘
+//!                     │
+//!     ┌───────────────┴───────────────┐
+//!     ▼                               ▼
+//! ┌─────────────┐               ┌─────────────┐
+//! │  Cascade    │  (if passes)  │  vf-perf    │
+//! │  Verifier   │ ────────────> │  Analyzer   │
+//! └──────┬──────┘               └──────┬──────┘
+//!        │                             │
+//! (if fails)                    (if below target)
+//!        │                             │
+//!        ▼                             ▼
+//! ┌─────────────┐               ┌─────────────┐
+//! │    Fix      │               │   Perf      │
+//! │   Prompt    │               │  Improve    │
+//! └─────────────┘               └─────────────┘
 //! ```
 
 pub mod client;
 pub mod generator;
 pub mod prompt;
-pub mod templates;
 
 pub use client::{ClaudeClient, ClaudeConfig, Message, Role};
-pub use generator::{CodeGenerator, GeneratorConfig, GeneratorResult};
-pub use prompt::{PromptBuilder, PromptTemplate, SpecType};
-pub use templates::dst_instrumented::{generate_dst_instrumented_code, DST_INSTRUMENTED_TEMPLATE};
+pub use generator::{AttemptRecord, CodeGenerator, GeneratorConfig, GeneratorResult};
+pub use prompt::{extract_code_block, PromptBuilder};
