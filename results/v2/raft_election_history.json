@@ -1,0 +1,402 @@
+[
+  {
+    "generation": 1,
+    "best_score": 160.0,
+    "best_progress": "LockFree",
+    "best_model": "opus",
+    "island_bests": [
+      160.0,
+      160.0,
+      160.0,
+      160.0
+    ],
+    "evaluations": 5,
+    "duration_secs": 348.710599916,
+    "model_stats": [
+      {
+        "label": "opus",
+        "evals": 1,
+        "avg_score": 160.0,
+        "best_score": 160.0
+      },
+      {
+        "label": "opus-warm",
+        "evals": 1,
+        "avg_score": 160.0,
+        "best_score": 160.0
+      },
+      {
+        "label": "opus-hot",
+        "evals": 1,
+        "avg_score": 160.0,
+        "best_score": 160.0
+      },
+      {
+        "label": "opus-max",
+        "evals": 1,
+        "avg_score": 160.0,
+        "best_score": 160.0
+      }
+    ]
+  },
+  {
+    "generation": 2,
+    "best_score": 270.0,
+    "best_progress": "LockFree",
+    "best_model": "opus-warm",
+    "island_bests": [
+      160.0,
+      270.0,
+      160.0,
+      160.0
+    ],
+    "evaluations": 9,
+    "duration_secs": 328.024555542,
+    "model_stats": [
+      {
+        "label": "opus",
+        "evals": 2,
+        "avg_score": 160.0,
+        "best_score": 160.0
+      },
+      {
+        "label": "opus-warm",
+        "evals": 2,
+        "avg_score": 215.0,
+        "best_score": 270.0
+      },
+      {
+        "label": "opus-hot",
+        "evals": 2,
+        "avg_score": 160.0,
+        "best_score": 160.0
+      },
+      {
+        "label": "opus-max",
+        "evals": 2,
+        "avg_score": 160.0,
+        "best_score": 160.0
+      }
+    ]
+  },
+  {
+    "generation": 3,
+    "best_score": 490.0,
+    "best_progress": "LockFree",
+    "best_model": "opus-hot",
+    "island_bests": [
+      160.0,
+      270.0,
+      490.0,
+      380.0
+    ],
+    "evaluations": 13,
+    "duration_secs": 381.238172458,
+    "model_stats": [
+      {
+        "label": "opus",
+        "evals": 3,
+        "avg_score": 160.0,
+        "best_score": 160.0
+      },
+      {
+        "label": "opus-warm",
+        "evals": 3,
+        "avg_score": 196.66666666666666,
+        "best_score": 270.0
+      },
+      {
+        "label": "opus-hot",
+        "evals": 3,
+        "avg_score": 270.0,
+        "best_score": 490.0
+      },
+      {
+        "label": "opus-max",
+        "evals": 3,
+        "avg_score": 233.33333333333334,
+        "best_score": 380.0
+      }
+    ]
+  },
+  {
+    "generation": 4,
+    "best_score": 490.0,
+    "best_progress": "LockFree",
+    "best_model": "opus-hot",
+    "island_bests": [
+      270.0,
+      270.0,
+      490.0,
+      490.0
+    ],
+    "evaluations": 17,
+    "duration_secs": 396.268882625,
+    "model_stats": [
+      {
+        "label": "opus",
+        "evals": 4,
+        "avg_score": 187.5,
+        "best_score": 270.0
+      },
+      {
+        "label": "opus-warm",
+        "evals": 4,
+        "avg_score": 215.0,
+        "best_score": 270.0
+      },
+      {
+        "label": "opus-hot",
+        "evals": 4,
+        "avg_score": 215.0,
+        "best_score": 490.0
+      },
+      {
+        "label": "opus-max",
+        "evals": 4,
+        "avg_score": 297.5,
+        "best_score": 490.0
+      }
+    ]
+  },
+  {
+    "generation": 5,
+    "best_score": 490.0,
+    "best_progress": "LockFree",
+    "best_model": "opus-hot",
+    "island_bests": [
+      490.0,
+      270.0,
+      490.0,
+      490.0
+    ],
+    "evaluations": 21,
+    "duration_secs": 429.617730042,
+    "model_stats": [
+      {
+        "label": "opus",
+        "evals": 4,
+        "avg_score": 187.5,
+        "best_score": 270.0
+      },
+      {
+        "label": "opus-warm",
+        "evals": 4,
+        "avg_score": 215.0,
+        "best_score": 270.0
+      },
+      {
+        "label": "opus-hot",
+        "evals": 4,
+        "avg_score": 215.0,
+        "best_score": 490.0
+      },
+      {
+        "label": "opus-max",
+        "evals": 8,
+        "avg_score": 270.0,
+        "best_score": 490.0
+      }
+    ]
+  },
+  {
+    "generation": 6,
+    "best_score": 490.0,
+    "best_progress": "LockFree",
+    "best_model": "opus-hot",
+    "island_bests": [
+      490.0,
+      270.0,
+      490.0,
+      490.0
+    ],
+    "evaluations": 25,
+    "duration_secs": 455.434389791,
+    "model_stats": [
+      {
+        "label": "opus",
+        "evals": 4,
+        "avg_score": 187.5,
+        "best_score": 270.0
+      },
+      {
+        "label": "opus-warm",
+        "evals": 5,
+        "avg_score": 226.0,
+        "best_score": 270.0
+      },
+      {
+        "label": "opus-hot",
+        "evals": 4,
+        "avg_score": 215.0,
+        "best_score": 490.0
+      },
+      {
+        "label": "opus-max",
+        "evals": 11,
+        "avg_score": 290.0,
+        "best_score": 490.0
+      }
+    ]
+  },
+  {
+    "generation": 7,
+    "best_score": 490.0,
+    "best_progress": "LockFree",
+    "best_model": "opus-hot",
+    "island_bests": [
+      490.0,
+      270.0,
+      490.0,
+      490.0
+    ],
+    "evaluations": 29,
+    "duration_secs": 505.087020917,
+    "model_stats": [
+      {
+        "label": "opus",
+        "evals": 4,
+        "avg_score": 187.5,
+        "best_score": 270.0
+      },
+      {
+        "label": "opus-warm",
+        "evals": 6,
+        "avg_score": 233.33333333333334,
+        "best_score": 270.0
+      },
+      {
+        "label": "opus-hot",
+        "evals": 5,
+        "avg_score": 226.0,
+        "best_score": 490.0
+      },
+      {
+        "label": "opus-max",
+        "evals": 13,
+        "avg_score": 295.38461538461536,
+        "best_score": 490.0
+      }
+    ]
+  },
+  {
+    "generation": 8,
+    "best_score": 490.0,
+    "best_progress": "LockFree",
+    "best_model": "opus-hot",
+    "island_bests": [
+      490.0,
+      270.0,
+      490.0,
+      490.0
+    ],
+    "evaluations": 33,
+    "duration_secs": 456.434969708,
+    "model_stats": [
+      {
+        "label": "opus",
+        "evals": 4,
+        "avg_score": 187.5,
+        "best_score": 270.0
+      },
+      {
+        "label": "opus-warm",
+        "evals": 6,
+        "avg_score": 233.33333333333334,
+        "best_score": 270.0
+      },
+      {
+        "label": "opus-hot",
+        "evals": 6,
+        "avg_score": 251.66666666666666,
+        "best_score": 490.0
+      },
+      {
+        "label": "opus-max",
+        "evals": 16,
+        "avg_score": 276.875,
+        "best_score": 490.0
+      }
+    ]
+  },
+  {
+    "generation": 9,
+    "best_score": 490.0,
+    "best_progress": "LockFree",
+    "best_model": "opus-hot",
+    "island_bests": [
+      490.0,
+      270.0,
+      490.0,
+      490.0
+    ],
+    "evaluations": 37,
+    "duration_secs": 442.061238375,
+    "model_stats": [
+      {
+        "label": "opus",
+        "evals": 6,
+        "avg_score": 233.33333333333334,
+        "best_score": 490.0
+      },
+      {
+        "label": "opus-warm",
+        "evals": 6,
+        "avg_score": 233.33333333333334,
+        "best_score": 270.0
+      },
+      {
+        "label": "opus-hot",
+        "evals": 8,
+        "avg_score": 256.25,
+        "best_score": 490.0
+      },
+      {
+        "label": "opus-max",
+        "evals": 16,
+        "avg_score": 276.875,
+        "best_score": 490.0
+      }
+    ]
+  },
+  {
+    "generation": 10,
+    "best_score": 490.0,
+    "best_progress": "LockFree",
+    "best_model": "opus-hot",
+    "island_bests": [
+      490.0,
+      490.0,
+      490.0,
+      490.0
+    ],
+    "evaluations": 41,
+    "duration_secs": 480.6798745,
+    "model_stats": [
+      {
+        "label": "opus",
+        "evals": 9,
+        "avg_score": 257.77777777777777,
+        "best_score": 490.0
+      },
+      {
+        "label": "opus-warm",
+        "evals": 6,
+        "avg_score": 233.33333333333334,
+        "best_score": 270.0
+      },
+      {
+        "label": "opus-hot",
+        "evals": 9,
+        "avg_score": 257.77777777777777,
+        "best_score": 490.0
+      },
+      {
+        "label": "opus-max",
+        "evals": 16,
+        "avg_score": 276.875,
+        "best_score": 490.0
+      }
+    ]
+  }
+]

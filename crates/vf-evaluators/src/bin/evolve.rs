@@ -152,28 +152,28 @@ impl LlmModel {
     }
 }
 
-/// Build the default model ensemble.
+/// Build the default model ensemble — all Opus 4.6 with varying temperatures.
 fn default_ensemble() -> Vec<LlmModel> {
     vec![
         LlmModel::new(
             "claude-opus-4-6",
-            "opus-4.6",
-            Some(0.7), // Opus 4.6: most capable, lower temp for precision
-        ),
-        LlmModel::new(
-            "claude-sonnet-4-5-20250929",
-            "sonnet-4.5",
-            None, // Sonnet 4.5: fast + capable, default temp
-        ),
-        LlmModel::new(
-            "claude-haiku-4-5-20251001",
-            "haiku-4.5",
-            Some(1.0), // Haiku 4.5: cheapest, high temp for maximum diversity
+            "opus",
+            Some(0.5), // Opus 4.6: low temp for precise, focused edits
         ),
         LlmModel::new(
             "claude-opus-4-6",
-            "opus-4.6-hot",
-            Some(1.0), // Opus 4.6 with high temp for exploration
+            "opus-warm",
+            Some(0.7), // Opus 4.6: moderate temp for balanced exploration
+        ),
+        LlmModel::new(
+            "claude-opus-4-6",
+            "opus-hot",
+            Some(0.9), // Opus 4.6: high temp for creative exploration
+        ),
+        LlmModel::new(
+            "claude-opus-4-6",
+            "opus-max",
+            Some(1.0), // Opus 4.6: maximum diversity
         ),
     ]
 }
@@ -327,23 +327,38 @@ async fn call_anthropic(
 }
 
 fn extract_rust_code(response: &str) -> String {
-    if let Some(start) = response.find("```rust") {
+    let raw = if let Some(start) = response.find("```rust") {
         let code_start = start + "```rust".len();
         if let Some(end) = response[code_start..].find("```") {
-            return response[code_start..code_start + end].trim().to_string();
+            response[code_start..code_start + end].trim().to_string()
+        } else {
+            // No closing fence — take everything after opening fence
+            response[code_start..].trim().to_string()
         }
-    }
-    if let Some(start) = response.find("```") {
+    } else if let Some(start) = response.find("```") {
         let after_ticks = start + 3;
         let code_start = response[after_ticks..]
             .find('\n')
             .map(|i| after_ticks + i + 1)
             .unwrap_or(after_ticks);
         if let Some(end) = response[code_start..].find("```") {
-            return response[code_start..code_start + end].trim().to_string();
+            response[code_start..code_start + end].trim().to_string()
+        } else {
+            response[code_start..].trim().to_string()
         }
-    }
-    response.trim().to_string()
+    } else {
+        response.trim().to_string()
+    };
+
+    // Strip any leaked markdown fence markers (```rust, ```) that ended up in the code.
+    // These cause rustc "unknown start of token" errors.
+    raw.lines()
+        .filter(|line| {
+            let trimmed = line.trim();
+            !trimmed.starts_with("```")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 // ---------------------------------------------------------------------------
@@ -507,8 +522,13 @@ fn build_mutation_prompt(parent: &Candidate, stepping_stones: bool, patterns: &s
          1. If it doesn't compile, fix syntax/type errors\n\
          2. If Blocking (uses Mutex), replace with lock-free CAS operations using std::sync::atomic\n\
          3. If LockFree, optimize throughput or try WaitFree\n\
-         4. Use crossbeam-epoch for safe memory reclamation\n\n\
-         Return ONLY the complete Rust source code, no explanations.",
+         4. For memory reclamation, prefer crossbeam-epoch — but if Miri reports \
+            Stacked Borrows / retag UB from crossbeam-epoch, switch to a simpler \
+            approach (Mutex<Vec<..>>, Arc, or manual epoch with safe Rust)\n\n\
+         Return ONLY the complete Rust source code. \
+         Do NOT include markdown fences (no ```). \
+         Do NOT include explanations. \
+         Output raw Rust code starting with `use` or `//`.",
         parent.score,
         parent.progress,
         parent.level_reached,
@@ -621,7 +641,10 @@ async fn main() {
          The code must compile and pass the test harness. \
          Among correct implementations, prefer higher progress guarantees: \
          WaitFree > LockFree > ObstructionFree > Blocking. \
-         Use std::sync::atomic and crossbeam-epoch for lock-free designs.",
+         Use std::sync::atomic for lock-free designs. \
+         crossbeam-epoch is available for memory reclamation but if Miri \
+         reports Stacked Borrows UB from it, use safe alternatives instead. \
+         Output raw Rust code only — never include markdown fences.",
         category_desc, cli.task
     );
 
@@ -703,7 +726,7 @@ async fn main() {
                 &system_prompt,
                 &prompt,
                 temp,
-                4096,
+                128_000,
             )
             .await
             {

@@ -1,0 +1,402 @@
+[
+  {
+    "generation": 1,
+    "best_score": 440.0,
+    "best_progress": "Blocking",
+    "best_model": "opus",
+    "island_bests": [
+      440.0,
+      440.0,
+      440.0,
+      440.0
+    ],
+    "evaluations": 5,
+    "duration_secs": 369.417396375,
+    "model_stats": [
+      {
+        "label": "opus",
+        "evals": 1,
+        "avg_score": 440.0,
+        "best_score": 440.0
+      },
+      {
+        "label": "opus-warm",
+        "evals": 1,
+        "avg_score": 440.0,
+        "best_score": 440.0
+      },
+      {
+        "label": "opus-hot",
+        "evals": 1,
+        "avg_score": 440.0,
+        "best_score": 440.0
+      },
+      {
+        "label": "opus-max",
+        "evals": 1,
+        "avg_score": 440.0,
+        "best_score": 440.0
+      }
+    ]
+  },
+  {
+    "generation": 2,
+    "best_score": 440.0,
+    "best_progress": "Blocking",
+    "best_model": "opus",
+    "island_bests": [
+      440.0,
+      440.0,
+      440.0,
+      440.0
+    ],
+    "evaluations": 9,
+    "duration_secs": 362.863554084,
+    "model_stats": [
+      {
+        "label": "opus",
+        "evals": 2,
+        "avg_score": 275.0,
+        "best_score": 440.0
+      },
+      {
+        "label": "opus-warm",
+        "evals": 2,
+        "avg_score": 440.0,
+        "best_score": 440.0
+      },
+      {
+        "label": "opus-hot",
+        "evals": 2,
+        "avg_score": 440.0,
+        "best_score": 440.0
+      },
+      {
+        "label": "opus-max",
+        "evals": 2,
+        "avg_score": 440.0,
+        "best_score": 440.0
+      }
+    ]
+  },
+  {
+    "generation": 3,
+    "best_score": 440.0,
+    "best_progress": "Blocking",
+    "best_model": "opus",
+    "island_bests": [
+      440.0,
+      440.0,
+      440.0,
+      440.0
+    ],
+    "evaluations": 13,
+    "duration_secs": 380.923974708,
+    "model_stats": [
+      {
+        "label": "opus",
+        "evals": 3,
+        "avg_score": 330.0,
+        "best_score": 440.0
+      },
+      {
+        "label": "opus-warm",
+        "evals": 3,
+        "avg_score": 440.0,
+        "best_score": 440.0
+      },
+      {
+        "label": "opus-hot",
+        "evals": 3,
+        "avg_score": 440.0,
+        "best_score": 440.0
+      },
+      {
+        "label": "opus-max",
+        "evals": 3,
+        "avg_score": 440.0,
+        "best_score": 440.0
+      }
+    ]
+  },
+  {
+    "generation": 4,
+    "best_score": 440.0,
+    "best_progress": "Blocking",
+    "best_model": "opus",
+    "island_bests": [
+      440.0,
+      440.0,
+      440.0,
+      440.0
+    ],
+    "evaluations": 17,
+    "duration_secs": 423.986360167,
+    "model_stats": [
+      {
+        "label": "opus",
+        "evals": 4,
+        "avg_score": 357.5,
+        "best_score": 440.0
+      },
+      {
+        "label": "opus-warm",
+        "evals": 4,
+        "avg_score": 440.0,
+        "best_score": 440.0
+      },
+      {
+        "label": "opus-hot",
+        "evals": 4,
+        "avg_score": 440.0,
+        "best_score": 440.0
+      },
+      {
+        "label": "opus-max",
+        "evals": 4,
+        "avg_score": 440.0,
+        "best_score": 440.0
+      }
+    ]
+  },
+  {
+    "generation": 5,
+    "best_score": 440.0,
+    "best_progress": "Blocking",
+    "best_model": "opus",
+    "island_bests": [
+      440.0,
+      440.0,
+      440.0,
+      440.0
+    ],
+    "evaluations": 21,
+    "duration_secs": 414.85542925,
+    "model_stats": [
+      {
+        "label": "opus",
+        "evals": 5,
+        "avg_score": 374.0,
+        "best_score": 440.0
+      },
+      {
+        "label": "opus-warm",
+        "evals": 5,
+        "avg_score": 440.0,
+        "best_score": 440.0
+      },
+      {
+        "label": "opus-hot",
+        "evals": 5,
+        "avg_score": 440.0,
+        "best_score": 440.0
+      },
+      {
+        "label": "opus-max",
+        "evals": 5,
+        "avg_score": 440.0,
+        "best_score": 440.0
+      }
+    ]
+  },
+  {
+    "generation": 6,
+    "best_score": 440.0,
+    "best_progress": "Blocking",
+    "best_model": "opus",
+    "island_bests": [
+      440.0,
+      440.0,
+      440.0,
+      440.0
+    ],
+    "evaluations": 25,
+    "duration_secs": 422.316163875,
+    "model_stats": [
+      {
+        "label": "opus",
+        "evals": 6,
+        "avg_score": 385.0,
+        "best_score": 440.0
+      },
+      {
+        "label": "opus-warm",
+        "evals": 6,
+        "avg_score": 440.0,
+        "best_score": 440.0
+      },
+      {
+        "label": "opus-hot",
+        "evals": 6,
+        "avg_score": 440.0,
+        "best_score": 440.0
+      },
+      {
+        "label": "opus-max",
+        "evals": 6,
+        "avg_score": 440.0,
+        "best_score": 440.0
+      }
+    ]
+  },
+  {
+    "generation": 7,
+    "best_score": 490.0,
+    "best_progress": "LockFree",
+    "best_model": "opus",
+    "island_bests": [
+      490.0,
+      440.0,
+      440.0,
+      440.0
+    ],
+    "evaluations": 29,
+    "duration_secs": 455.637197875,
+    "model_stats": [
+      {
+        "label": "opus",
+        "evals": 7,
+        "avg_score": 400.0,
+        "best_score": 490.0
+      },
+      {
+        "label": "opus-warm",
+        "evals": 6,
+        "avg_score": 440.0,
+        "best_score": 440.0
+      },
+      {
+        "label": "opus-hot",
+        "evals": 7,
+        "avg_score": 440.0,
+        "best_score": 440.0
+      },
+      {
+        "label": "opus-max",
+        "evals": 8,
+        "avg_score": 440.0,
+        "best_score": 440.0
+      }
+    ]
+  },
+  {
+    "generation": 8,
+    "best_score": 490.0,
+    "best_progress": "LockFree",
+    "best_model": "opus",
+    "island_bests": [
+      490.0,
+      440.0,
+      440.0,
+      440.0
+    ],
+    "evaluations": 33,
+    "duration_secs": 455.137930458,
+    "model_stats": [
+      {
+        "label": "opus",
+        "evals": 8,
+        "avg_score": 405.0,
+        "best_score": 490.0
+      },
+      {
+        "label": "opus-warm",
+        "evals": 8,
+        "avg_score": 440.0,
+        "best_score": 440.0
+      },
+      {
+        "label": "opus-hot",
+        "evals": 8,
+        "avg_score": 440.0,
+        "best_score": 440.0
+      },
+      {
+        "label": "opus-max",
+        "evals": 8,
+        "avg_score": 440.0,
+        "best_score": 440.0
+      }
+    ]
+  },
+  {
+    "generation": 9,
+    "best_score": 490.0,
+    "best_progress": "LockFree",
+    "best_model": "opus",
+    "island_bests": [
+      490.0,
+      440.0,
+      440.0,
+      440.0
+    ],
+    "evaluations": 37,
+    "duration_secs": 476.893392459,
+    "model_stats": [
+      {
+        "label": "opus",
+        "evals": 8,
+        "avg_score": 405.0,
+        "best_score": 490.0
+      },
+      {
+        "label": "opus-warm",
+        "evals": 9,
+        "avg_score": 440.0,
+        "best_score": 440.0
+      },
+      {
+        "label": "opus-hot",
+        "evals": 9,
+        "avg_score": 440.0,
+        "best_score": 440.0
+      },
+      {
+        "label": "opus-max",
+        "evals": 10,
+        "avg_score": 440.0,
+        "best_score": 440.0
+      }
+    ]
+  },
+  {
+    "generation": 10,
+    "best_score": 490.0,
+    "best_progress": "LockFree",
+    "best_model": "opus",
+    "island_bests": [
+      490.0,
+      490.0,
+      490.0,
+      490.0
+    ],
+    "evaluations": 41,
+    "duration_secs": 456.134501875,
+    "model_stats": [
+      {
+        "label": "opus",
+        "evals": 8,
+        "avg_score": 405.0,
+        "best_score": 490.0
+      },
+      {
+        "label": "opus-warm",
+        "evals": 12,
+        "avg_score": 444.1666666666667,
+        "best_score": 490.0
+      },
+      {
+        "label": "opus-hot",
+        "evals": 10,
+        "avg_score": 440.0,
+        "best_score": 440.0
+      },
+      {
+        "label": "opus-max",
+        "evals": 10,
+        "avg_score": 440.0,
+        "best_score": 440.0
+      }
+    ]
+  }
+]
